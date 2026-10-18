@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>magic beatz — MPK mini console</title>
+  <link rel="stylesheet" href="./style.css">
+</head>
+<body>
+  <div class="mbz-app">
+    <header class="mbz-topbar">
+      <div class="mbz-brand">
+        <a class="mbz-back" href="../index.html" title="Back to guitar suite">← suite</a>
+        <h1>magic beatz <span class="mbz-sub">mpk mini console</span></h1>
+      </div>
+      <div class="mbz-top-status">
+        <span class="mbz-pill" data-midi-status>MIDI…</span>
+        <span class="mbz-pill" data-asset-status>assets…</span>
+        <span class="mbz-pill" data-fw-status title="MPK firmware (SysEx inquiry)">fw —</span>
+        <button type="button" class="mbz-btn" data-fw-check title="Query MPK firmware via SysEx Device Inquiry">fw?</button>
+      </div>
+    </header>
+
+    <main class="mbz-console" aria-label="MPK mini console">
+      <section class="mbz-row mbz-knobs-row" aria-label="Knobs and controls">
+        <div class="mbz-block">
+          <h2>knobs <span class="mbz-hint">K1–K8 · CC learn</span></h2>
+          <div class="mbz-knobs" data-knobs></div>
+        </div>
+        <div class="mbz-block mbz-joystick-block">
+          <h2>stick</h2>
+          <div class="mbz-joystick" data-joystick aria-label="Joystick X/Y">
+            <div class="mbz-joystick-dot" data-joystick-dot></div>
+          </div>
+          <div class="mbz-joystick-readout" data-joystick-readout>X — · Y —</div>
+        </div>
+        <div class="mbz-block">
+          <h2>control</h2>
+          <div class="mbz-control-grid">
+            <button type="button" class="mbz-btn" data-oct-down title="Octave down">oct −</button>
+            <span class="mbz-oct-label" data-oct-label>oct 3</span>
+            <button type="button" class="mbz-btn" data-oct-up title="Octave up">oct +</button>
+            <button type="button" class="mbz-btn is-active" data-bank-a title="Pad bank A">A</button>
+            <button type="button" class="mbz-btn" data-bank-b title="Pad bank B">B</button>
+            <button type="button" class="mbz-btn is-on" data-audition title="Audition on/off">listen</button>
+            <button type="button" class="mbz-btn" data-capture title="Capture pads+keys into grid">capture</button>
+          </div>
+          <p class="mbz-note">pads + keys live in parallel. capture writes into the active pattern.</p>
+        </div>
+      </section>
+
+      <section class="mbz-row" aria-label="Transport and pattern">
+        <div class="mbz-block mbz-transport">
+          <h2>transport</h2>
+          <div class="mbz-transport-grid">
+            <button type="button" class="mbz-btn mbz-big" data-play title="Play">▶</button>
+            <button type="button" class="mbz-btn mbz-big" data-stop title="Stop" disabled>■</button>
+            <label>BPM <input type="number" data-bpm value="120" min="30" max="250"></label>
+            <label>swing <input type="range" data-swing min="0" max="100" value="0"><span data-swing-val>0%</span></label>
+            <label>sig
+              <select data-sig>
+                <option value="4/4">4/4</option>
+                <option value="3/4">3/4</option>
+                <option value="6/8">6/8</option>
+              </select>
+            </label>
+            <label>bars
+              <select data-bars>
+                <option value="1">1b</option>
+                <option value="2">2b</option>
+                <option value="3">3b</option>
+                <option value="4">4b</option>
+              </select>
+            </label>
+            <label>pattern <select data-pattern></select></label>
+          </div>
+          <p class="mbz-note" data-project-note>project: magicbeatz-v1</p>
+        </div>
+        <div class="mbz-block mbz-pads-block">
+          <h2>pads <span class="mbz-hint">Bank <b data-bank-label>A</b> · tap = play · gear = map</span></h2>
+          <div class="mbz-pads" data-pads></div>
+        </div>
+      </section>
+
+      <section class="mbz-row" aria-label="Sequencer and keys">
+        <div class="mbz-block mbz-grid-block">
+          <h2>grid <span class="mbz-hint">click steps · velocity below</span></h2>
+          <div class="mbz-grid-wrap"><div class="mbz-grid" data-grid role="grid" aria-label="Step sequencer"></div></div>
+          <div class="mbz-vel-row">
+            <label>velocity <input type="range" data-velocity min="10" max="100" value="80" disabled></label>
+            <span data-velocity-val>—</span>
+            <button type="button" class="mbz-btn" data-grid-clear>clear</button>
+            <button type="button" class="mbz-btn" data-grid-reset>factory</button>
+          </div>
+        </div>
+        <div class="mbz-block mbz-keys-block">
+          <h2>keys <span class="mbz-hint">25 keys · computer A–\ + MIDI</span></h2>
+          <div class="mbz-keys-bar">
+            <label>instrument <select data-keys-inst></select></label>
+            <label>curve
+              <select data-keys-curve>
+                <option value="linear">linear</option>
+                <option value="soft">soft</option>
+                <option value="hard">hard</option>
+                <option value="fixed">fixed</option>
+              </select>
+            </label>
+          </div>
+          <div class="mbz-keyboard" data-keyboard aria-label="Piano keyboard"></div>
+        </div>
+      </section>
+
+      <section class="mbz-row" aria-label="Pad mapping">
+        <div class="mbz-block mbz-map-block">
+          <h2>pad map <span class="mbz-hint">each pad = a tab: drum · note · chord</span></h2>
+          <div class="mbz-pad-editors" data-pad-editors></div>
+        </div>
+      </section>
+    </main>
+  </div>
+  <script type="module" src="./main.js"></script>
+</body>
+</html>
