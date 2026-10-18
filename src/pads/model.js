@@ -7,7 +7,7 @@
  * incoming (ch, note) -> lookup (ch, note) in active bank -> drum hit? fire : piano range? play piano : ignore.
  * Factory presets: pads Ch 10 (index 9), keys Ch 1 (index 0) — presets, not rules.
  */
-import { MBZ_PADMAP_KEY } from './store.js';
+import { MBZ_PADMAP_KEY } from '../state/store.js';
 
 export const PAD_ORDER = [5, 6, 7, 8, 1, 2, 3, 4]; // display order: top row then bottom
 export const PAD_SCHEMA = 2;

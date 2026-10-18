@@ -1,0 +1,105 @@
+{
+  "Ionian": {
+    "alter": "major",
+    "steps": [2, 2, 1, 2, 2, 2, 1],
+    "use": "Major key default — bright, familiar pop & folk",
+    "progressions": [
+      { "name": "Pop", "pattern": "I V vi IV" },
+      { "name": "Classic", "pattern": "I IV V" },
+      { "name": "Jazz turnaround", "pattern": "ii V I" },
+      { "name": "50s", "pattern": "I vi IV V" }
+    ]
+  },
+  "Dorian": {
+    "alter": "minor",
+    "steps": [2, 1, 2, 2, 2, 1, 2],
+    "use": "Minor with raised 6th — funk, jazz, rock soloing",
+    "progressions": [
+      { "name": "Modal vamp", "pattern": "i IV" },
+      { "name": "Funk groove", "pattern": "i iv" },
+      { "name": "Soul", "pattern": "i III IV" }
+    ]
+  },
+  "Phrygian": {
+    "alter": "minor",
+    "steps": [1, 2, 2, 2, 1, 2, 2],
+    "use": "Spanish / flamenco flavour, metal riffs",
+    "progressions": [
+      { "name": "Flamenco", "pattern": "i II III" },
+      { "name": "Metal riff", "pattern": "i iv" }
+    ]
+  },
+  "Lydian": {
+    "alter": "major",
+    "steps": [2, 2, 2, 1, 2, 2, 1],
+    "use": "Dreamy major — film scores, prog, floating feel",
+    "progressions": [
+      { "name": "Film score", "pattern": "I II" },
+      { "name": "Floating", "pattern": "I V" }
+    ]
+  },
+  "Mixolydian": {
+    "alter": "major",
+    "steps": [2, 2, 1, 2, 2, 1, 2],
+    "use": "Dominant major — blues, rock, country grooves",
+    "progressions": [
+      { "name": "Rock", "pattern": "I IV V" },
+      { "name": "Blues rock", "pattern": "I VII IV" },
+      { "name": "Groove", "pattern": "I V" }
+    ]
+  },
+  "Aeolian": {
+    "alter": "minor",
+    "steps": [2, 1, 2, 2, 1, 2, 2],
+    "use": "Natural minor — sad ballads, metal, classical minor",
+    "progressions": [
+      { "name": "Andalusian", "pattern": "i VII VI V" },
+      { "name": "Natural minor", "pattern": "i iv v" },
+      { "name": "Epic", "pattern": "i VI III VII" }
+    ]
+  },
+  "Locrian": {
+    "alter": "diminished",
+    "steps": [1, 2, 2, 1, 2, 2, 2],
+    "use": "Unstable, rare — jazz passing tones, experimental",
+    "progressions": [
+      { "name": "Experimental", "pattern": "i° iv" }
+    ]
+  },
+  "Harmonic Minor": {
+    "alter": "minor",
+    "steps": [2, 1, 2, 2, 1, 3, 1],
+    "use": "Classical minor — neoclassical metal, dramatic leads",
+    "progressions": [
+      { "name": "Classical", "pattern": "i iv V" },
+      { "name": "Neoclassical", "pattern": "i VI V" }
+    ]
+  },
+  "Melodic Minor": {
+    "alter": "minor",
+    "steps": [2, 1, 2, 2, 2, 2, 1],
+    "use": "Jazz minor — fusion, modern jazz improvisation",
+    "progressions": [
+      { "name": "Jazz minor", "pattern": "i II V" },
+      { "name": "Fusion", "pattern": "i IV" }
+    ]
+  },
+  "Major Pentatonic": {
+    "alter": "major",
+    "steps": [2, 2, 3, 2, 3],
+    "use": "Simple major — country, rock hooks, easy soloing",
+    "progressions": [
+      { "name": "Country", "pattern": "I IV I V" },
+      { "name": "Rock hook", "pattern": "I V" }
+    ]
+  },
+  "Minor Pentatonic": {
+    "alter": "minor",
+    "steps": [3, 2, 2, 3, 2],
+    "use": "Blues & rock soloing — omits 2nd and 6th degrees",
+    "progressions": [
+      { "name": "Blues", "pattern": "i IV" },
+      { "name": "Rock", "pattern": "i VII" }
+    ]
+  }
+}

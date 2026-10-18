@@ -84,3 +84,4 @@ body {
 .mbz-btn:disabled { opacity: 0.45; cursor: default; }
 .mbz-btn.is-active, .mbz-btn.is-on { background: var(--mbz-accent-2); color: #08130d; border-color: transparent; }
 .mbz-btn.mbz-big { font-size: 18px; }
+.mbz-badge { color: var(--mbz-text); font-size: 12px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; border: 1px solid var(--mbz-line); border-radius: 999px; padding: 6px 12px; background: var(--mbz-panel); white-space: nowrap; }

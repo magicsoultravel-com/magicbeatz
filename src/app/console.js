@@ -1,39 +1,47 @@
 /**
- * magicbeatz console entry — standalone full-page MPK mini console.
- * Phase 1 exit: loads in dev+preview, shared JSON from subfolder, engine
- * plays Rock preset, magicbeatz-v1 key written, back-link works.
+ * magicbeatz console — standalone AKAI MPK mini console (src/app/console.js).
+ * Composition root: transport + pads + keys + grid + MIDI wiring.
  */
-import { getAudioContext } from '../src/audio.js';
+import { getAudioContext } from '../audio/context.js';
 import {
   clampBpm, clamp01, beatsFromTimeSignature, totalSteps,
   DEFAULT_VELOCITY, INSTRUMENT_OPTIONS,
-} from '../src/magicBeatz/pattern.js';
+} from '../sequencer/pattern.js';
 import {
   getActivePattern, arrangementToSlots, slotsToArrangement,
   arrangementLengthBars,
-} from '../src/magicBeatz/project.js';
-import { createStepTransport } from '../src/magicBeatz/stepTransport.js';
-import { playChannelHit } from '../src/magicBeatz/banks/index.js';
-import { playPercussionVoice } from '../src/magicBeatz/banks/percussion.js';
+} from '../sequencer/project.js';
+import { createStepTransport } from '../sequencer/transport.js';
+import { playChannelHit } from '../audio/banks.js';
+import { playPercussionVoice } from '../audio/percussion.js';
 import {
-  playPitchedInstrument, startPitchedSustain, stopPitchedSustain,
+  playPitchedInstrument, playPitchedChord, startPitchedSustain, stopPitchedSustain,
   SUSTAIN_INSTRUMENTS,
-} from '../src/magicBeatz/voices.js';
-import { loadMbzProject, saveMbzProject, resetMbzProject } from './store.js';
+} from '../audio/voices.js';
+import { chordEntriesFor } from '../theory/chords.js';
+import { loadMbzProject, saveMbzProject, resetMbzProject } from '../state/store.js';
 import {
   loadPadMap, savePadMap, applyCurve, PAD_ORDER, getLearnSlot, setLearnSlot,
   findPadByNote, padCollisions, DEFAULT_PAD_CHANNEL, DEFAULT_KEYS_CHANNEL,
-} from './pads.js';
-import { connectMbzMidi, queryFirmwareVersion } from './midi.js';
+} from '../pads/model.js';
+import { connectMbzMidi } from '../midi/connection.js';
+import { queryFirmwareVersion } from '../midi/firmware.js';
 import {
   PITCH_ORDER, pitchOctFromMidi, pitchToMidi, midiFromBase,
   PC_NOTE_OFFSETS, midiRangeForKeys,
-} from '../src/magicBeatz/midiNotes.js';
+} from '../midi/notes.js';
+import { DEFAULT_KNOB_CC, DEFAULT_KNOB_VAL } from '../state/settings.js';
 
-/** Subfolder-safe asset fetch (DeepSeek #1): ../assets from magicbeatz/. */
+/** Standalone asset fetch: ./assets next to index.html. */
 function mbzAsset(path) {
   const clean = String(path).replace(/^\//, '').replace(/^assets\//, '');
-  return new URL(`../assets/${clean}`, document.baseURI).href;
+  return new URL(`./assets/${clean}`, document.baseURI).href;
+}
+
+/** Loaded theory data (wired into every playChannelHit — fixes silent chords). */
+const theory = { chordsJson: {}, notesJson: {}, scalesJson: {}, chordsTheory: {} };
+function chordCtx() {
+  return { ...theory, hub: { getRoot: () => 'C' } };
 }
 
 const PITCH_LABELS = PITCH_ORDER;
@@ -52,8 +60,8 @@ let recordBuffer = [];
 let loopOriginTime = 0;
 let selectedCell = null;
 let keysCurve = 'linear';
-let knobCC = [70, 71, 72, 73, 74, 75, 76, 77];
-let knobVal = [0.8, 0, 0.5, 0.8, 0.8, 0.8, 0.8, 0.8];
+let knobCC = [...DEFAULT_KNOB_CC];
+let knobVal = [...DEFAULT_KNOB_VAL];
 let joyX = 0, joyY = 0;
 
 // ---------- dom ----------
@@ -86,17 +94,29 @@ const heldKeys = new Map();
 const heldPc = new Set();
 
 async function proveAssets() {
-  const targets = ['notes.json', 'chords.json', 'scales-theory.json'];
+  const targets = ['notes.json', 'chords.json', 'scales-theory.json', 'chords-theory.json'];
+  let ok = 0;
   for (const t of targets) {
     try {
       const res = await fetch(mbzAsset(t));
       if (!res.ok) throw new Error(String(res.status));
       const json = await res.json();
-      const n = Array.isArray(json) ? json.length : Object.keys(json || {}).length;
-      assetPill.textContent = `assets ok ${t} (${n})`;
-      assetPill.dataset.kind = 'ready';
-      return json;
-    } catch { /* try next */ }
+      if (t === 'notes.json') theory.notesJson = json;
+      if (t === 'chords.json') theory.chordsJson = json;
+      if (t === 'scales-theory.json') theory.scalesJson = json;
+      if (t === 'chords-theory.json') theory.chordsTheory = json;
+      ok += 1;
+    } catch { /* keep going */ }
+  }
+  if (ok === targets.length) {
+    assetPill.textContent = `assets ok (${ok}/${targets.length})`;
+    assetPill.dataset.kind = 'ready';
+    return theory;
+  }
+  if (ok > 0) {
+    assetPill.textContent = `assets partial (${ok}/${targets.length})`;
+    assetPill.dataset.kind = 'none';
+    return theory;
   }
   assetPill.textContent = 'assets failed';
   assetPill.dataset.kind = 'denied';
@@ -149,7 +169,7 @@ const transport = createStepTransport({
       if (anySolo && !ch.solo) continue;
       const step = ch.steps[stepIndex];
       if (!step) continue;
-      playChannelHit(ch, when, step.velocity, {});
+      playChannelHit(ch, when, step.velocity, chordCtx());
     }
   },
 });
@@ -203,6 +223,10 @@ function auditionPad(bankId, padNum, velocity = 0.85) {
   if (capturing) recordBuffer.push({ kind: 'pad', bank: bankId, pad: padNum, entry: { ...entry }, t: getAudioContext().currentTime, velocity: vel });
   if (entry.target === 'drum') {
     playPercussionVoice(entry.voiceId || 'kick', undefined, vel);
+  } else if (entry.target === 'chord') {
+    const entries = chordEntriesFor(entry, chordCtx());
+    if (entries.length) playPitchedChord(entry.instrumentId || 'keys-pluck', entries, undefined, vel);
+    else playPitchedInstrument(entry.instrumentId || 'piano', entry.pitch || 'C', entry.octave ?? 4, undefined, vel);
   } else {
     playPitchedInstrument(entry.instrumentId || 'piano', entry.pitch || 'C', entry.octave ?? 4, undefined, vel);
   }

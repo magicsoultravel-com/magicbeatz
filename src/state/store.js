@@ -1,14 +1,14 @@
 /**
- * magicbeatz storage — isolated from guitarsuite (see DeepSeek #4).
+ * magicbeatz storage — isolated from guitarsuite (standalone keys).
  * New key `magicbeatz-v1` with schemaVersion; one-shot read-only import
  * from the legacy `guitarsuite-magicbeatz` key, never cross-writes.
  */
-import { parsePatternChannels } from '../src/magicBeatz/pattern.js';
+import { parsePatternChannels } from '../sequencer/pattern.js';
 import {
   createDefaultProject,
   parseProject as parseFullProject,
   serializeProject,
-} from '../src/magicBeatz/project.js';
+} from '../sequencer/project.js';
 
 export const MBZ_KEY = 'magicbeatz-v1';
 export const MBZ_PADMAP_KEY = 'magicbeatz-padmap-v1';
