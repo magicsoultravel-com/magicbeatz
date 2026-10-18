@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="description" content="magicbeatz mixing cheat sheet - EQ, compression, gain staging, panning, effects.">
+<title>mixing cheat sheet - magicbeatz</title>
+<link rel="icon" type="image/svg+xml" href="./assets/favicon.svg">
+<link rel="stylesheet" href="./src/styles/app.css">
+<link rel="stylesheet" href="./src/styles/cheat.css">
+</head>
+<body>
+<div class="mbz-app">
+<header class="mbz-topbar">
+<div class="mbz-brand">
+<span class="mbz-badge">AKAI MPK mini</span>
+<h1>magic beatz <span class="mbz-sub">mixing cheat sheet</span></h1>
+</div>
+<nav class="mbz-nav" aria-label="Site"><a href="./index.html" class="mbz-nav-link">console</a><a href="./mixing.html" class="mbz-nav-link is-active">mixing cheat sheet</a></nav>
+</header>
+<div class="cheat-hero">
+<h2>The goal of mixing</h2>
+<p>Balance every element so each part can be heard clearly and everything works together as one. Mix quietly at first, trust your ears over your eyes, and compare against a reference track you love.</p>
+<ul class="cheat-rules">
+<li><b>1.</b> Start with a good balance</li>
+<li><b>2.</b> Ears, not eyes</li>
+<li><b>3.</b> Less processing is more</li>
+<li><b>4.</b> Take breaks, stay fresh</li>
+<li><b>5.</b> Reference your mix</li>
+</ul>
+</div>
+<div class="cheat-grid">
+<section class="cheat-card cheat-span">
+<h3>Frequency spectrum - what lives where</h3>
+<p class="sub">If two sounds fight, they probably live in the same band. Carve space with EQ instead of turning everything up.</p>
+<svg class="cheat-svg" viewBox="0 0 720 92" role="img" aria-label="Frequency spectrum bar from 20 Hz to 20 kHz">
+<defs><linearGradient id="fspec" x1="0" y1="0" x2="1" y2="0">
+<stop offset="0" stop-color="#ff5d5d"/><stop offset=".35" stop-color="#ffb84d"/><stop offset=".6" stop-color="#57e6a8"/><stop offset=".85" stop-color="#6aa8ff"/><stop offset="1" stop-color="#c58aff"/>
+</linearGradient></defs>
+<rect x="8" y="8" width="704" height="34" rx="8" fill="url(#fspec)" opacity=".9"/>
+<g font-size="10" fill="#f2ecff" text-anchor="middle">
+<text x="30" y="60">20</text><text x="110" y="60">50</text><text x="180" y="60">100</text><text x="260" y="60">200</text><text x="350" y="60">500</text><text x="430" y="60">1k</text><text x="500" y="60">2k</text><text x="570" y="60">5k</text><text x="635" y="60">10k</text><text x="697" y="60">20k</text>
+</g>
+<g font-size="9" fill="#b9b0cc" text-anchor="middle">
+<text x="60" y="80">SUB</text><text x="190" y="80">BASS</text><text x="300" y="80">LOW MID</text><text x="420" y="80">MID</text><text x="520" y="80">HI MID</text><text x="605" y="80">PRESENCE</text><text x="680" y="80">AIR</text>
+</g>
+</svg>
+<div class="freq-row"><code>20-60 Hz SUB</code><div>Depth, rumble, sub energy.<small>Kick sub, 808s, deep synths - keep this lane almost empty.</small></div></div>
+<div class="freq-row"><code>60-250 Hz BASS</code><div>Punch, warmth, body.<small>Kick, bass, toms, low guitars - the power zone.</small></div></div>
+<div class="freq-row"><code>250-500 Hz LOW MID</code><div>Body and thickness - or boxiness.<small>Snare, guitars, keys, male vocal. Cut here to remove mud.</small></div></div>
+<div class="freq-row"><code>500 Hz-2 kHz MID</code><div>Clarity, definition, focus.<small>Vocals, guitars, keys, snare bite.</small></div></div>
+<div class="freq-row"><code>2-4 kHz HIGH MID</code><div>Presence, attack, intelligibility.<small>Vocals, snare crack, guitar edge, cymbals.</small></div></div>
+<div class="freq-row"><code>4-6 kHz PRESENCE</code><div>Detail, articulation, brilliance.<small>Air on vocals, stick on cymbals, string shine.</small></div></div>
+<div class="freq-row"><code>6-10 kHz SIZZLE</code><div>Sparkle and edge - harshness hides here too.<small>Tame 6-8 kHz if it pierces; keep 8-10 kHz for gloss.</small></div></div>
+<div class="freq-row"><code>10-20 kHz AIR</code><div>Openness, breath, shimmer.<small>Cymbals, hats, vocal breath. A little goes a long way.</small></div></div>
+</section>
+<section class="cheat-card">
+<h3>Quick EQ tips</h3>
+<p class="sub">Cut to clean, boost to shine. Small moves: cuts 2-4 dB, boosts 1-3 dB.</p>
+<div class="eq-grid">
+<div class="eq-mini"><svg viewBox="0 0 120 64"><line x1="0" y1="32" x2="120" y2="32" stroke="#3a3547"/><path d="M0 32 L30 32 Q40 32 45 8 L50 8" fill="none" stroke="#57e6a8" stroke-width="2.5"/><circle cx="45" cy="20" r="3" fill="#ff5d5d"/></svg><b>High-pass filter</b><p>Roll off lows on everything except kick + bass. Start 20-30 Hz, raise until it thins, then back off.</p></div>
+<div class="eq-mini"><svg viewBox="0 0 120 64"><line x1="0" y1="32" x2="120" y2="32" stroke="#3a3547"/><path d="M0 32 Q30 32 40 48 Q50 56 60 32 Q70 20 120 32" fill="none" stroke="#57e6a8" stroke-width="2.5"/></svg><b>Fix low-end clash</b><p>Kick vs bass fighting? Cut 200-300 Hz on one of them so the other owns the lows.</p></div>
+<div class="eq-mini"><svg viewBox="0 0 120 64"><line x1="0" y1="32" x2="120" y2="32" stroke="#3a3547"/><path d="M0 32 Q25 32 35 50 Q45 55 55 32 L120 32" fill="none" stroke="#57e6a8" stroke-width="2.5"/></svg><b>Reduce mud (250-500 Hz)</b><p>Boomy or boxy? Dip 2-3 dB with a wide bell. Instant clarity on vocals and guitars.</p></div>
+<div class="eq-mini"><svg viewBox="0 0 120 64"><line x1="0" y1="32" x2="120" y2="32" stroke="#3a3547"/><path d="M0 32 L55 32 Q65 32 70 12 Q75 8 85 32 L120 32" fill="none" stroke="#57e6a8" stroke-width="2.5"/></svg><b>Presence boost (2-5 kHz)</b><p>Help parts cut through. Narrow +1-2 dB lift for vocal intelligibility and snare snap.</p></div>
+<div class="eq-mini"><svg viewBox="0 0 120 64"><line x1="0" y1="32" x2="120" y2="32" stroke="#3a3547"/><path d="M0 32 L75 32 Q85 32 90 50 Q95 54 105 32 L120 32" fill="none" stroke="#57e6a8" stroke-width="2.5"/></svg><b>Tame harshness (6-8 kHz)</b><p>Piercing hats or sibilance? Gentle 2-3 dB dip. De-ess vocals around 6 kHz.</p></div>
+<div class="eq-mini"><svg viewBox="0 0 120 64"><line x1="0" y1="32" x2="120" y2="32" stroke="#3a3547"/><path d="M0 32 L85 32 Q95 32 100 12 L120 12" fill="none" stroke="#57e6a8" stroke-width="2.5"/></svg><b>Air and sparkle (10 kHz+)</b><p>High shelf +1-2 dB for openness on masters, overheads and breathy vocals.</p></div>
+</div>
+</section>
+<section class="cheat-card">
+<h3>Compression breakdown</h3>
+<p class="sub">A compressor shrinks dynamic range: loud parts get quieter, then makeup gain lifts everything.</p>
+<svg class="cheat-svg" viewBox="0 0 340 150" role="img" aria-label="Compression curve graph">
+<line x1="30" y1="10" x2="30" y2="130" stroke="#3a3547"/>
+<line x1="30" y1="130" x2="330" y2="130" stroke="#3a3547"/>
+<text x="8" y="70" font-size="9" fill="#b9b0cc" transform="rotate(-90 8 70)">OUTPUT</text>
+<text x="170" y="145" font-size="9" fill="#b9b0cc" text-anchor="middle">INPUT - quiet to loud</text>
+<line x1="30" y1="130" x2="330" y2="20" stroke="#3a3547" stroke-dasharray="4 3"/>
+<path d="M30 130 L150 70 L330 45" fill="none" stroke="#57e6a8" stroke-width="3"/>
+<circle cx="150" cy="70" r="5" fill="#ff5d5d"/>
+<text x="158" y="62" font-size="10" fill="#ff5d5d">threshold</text>
+<text x="250" y="38" font-size="10" fill="#57e6a8">ratio bends it flat</text>
+</svg>
+<dl class="kv">
+<dt>Threshold</dt><dd>The level where compression kicks in.</dd>
+<dt>Ratio</dt><dd>How hard it squeezes (3:1 gentle, 8:1+ firm).</dd>
+<dt>Attack</dt><dd>How fast it grabs (slow keeps punch, fast tames peaks).</dd>
+<dt>Release</dt><dd>How fast it lets go (too fast pumps, too slow dulls).</dd>
+<dt>Makeup</dt><dd>Gain to restore level lost to compression.</dd>
+</dl>
+<h4>Starting points</h4>
+<div class="pill-row"><span>threshold -18 dB</span><span>ratio 3:1-4:1</span><span>attack 10-30 ms</span><span>release 50-200 ms</span><span>makeup +3-6 dB</span></div>
+<p class="sub">Vocals: faster attack, medium release. Drums: slower attack to keep snap. Bass: medium attack, auto release.</p>
+</section>
+<section class="cheat-card">
+<h3>Volume and gain staging</h3>
+<p class="sub">Headroom is your friend. Loud comes last, at mastering.</p>
+<dl class="kv">
+<dt>-12 to -6 dBFS</dt><dd>Track input peaks. Plenty of room, clean converters.</dd>
+<dt>Faders = balance</dt><dd>Fix tone with EQ, dynamics with compression - not the fader.</dd>
+<dt>-6 dBFS on mix bus</dt><dd>Keep peaks under this so the master chain can breathe.</dd>
+<dt>0 dB unity</dt><dd>No boost or cut. Start here, then carve.</dd>
+</dl>
+<svg class="cheat-svg" viewBox="0 0 340 110" role="img" aria-label="Gain staging meter">
+<rect x="60" y="10" width="26" height="80" rx="4" fill="#1e1c26" stroke="#3a3547"/>
+<rect x="60" y="52" width="26" height="38" rx="4" fill="#57e6a8"/>
+<rect x="120" y="10" width="26" height="80" rx="4" fill="#1e1c26" stroke="#3a3547"/>
+<rect x="120" y="34" width="26" height="56" rx="4" fill="#ffb84d"/>
+<rect x="180" y="10" width="26" height="80" rx="4" fill="#1e1c26" stroke="#3a3547"/>
+<rect x="180" y="16" width="26" height="74" rx="4" fill="#ff5d5d"/>
+<text x="73" y="104" font-size="9" fill="#57e6a8" text-anchor="middle">good</text>
+<text x="133" y="104" font-size="9" fill="#ffb84d" text-anchor="middle">hot</text>
+<text x="193" y="104" font-size="9" fill="#ff5d5d" text-anchor="middle">clip!</text>
+<text x="250" y="35" font-size="11" fill="#f2ecff">peak ~ -12dB</text>
+<text x="250" y="52" font-size="11" fill="#b9b0cc">faders balance</text>
+<text x="250" y="69" font-size="11" fill="#b9b0cc">bus under -6dB</text>
+</svg>
+<h4>Panning guide</h4>
+<svg class="cheat-svg" viewBox="0 0 340 110" role="img" aria-label="Stereo field diagram">
+<ellipse cx="170" cy="60" rx="150" ry="42" fill="#1e1c26" stroke="#3a3547"/>
+<line x1="170" y1="18" x2="170" y2="102" stroke="#3a3547" stroke-dasharray="4 3"/>
+<text x="170" y="34" font-size="10" fill="#f2ecff" text-anchor="middle">CENTER</text>
+<text x="170" y="48" font-size="9" fill="#b9b0cc" text-anchor="middle">vox / kick / snare / bass</text>
+<text x="70" y="66" font-size="10" fill="#6aa8ff" text-anchor="middle">LEFT</text>
+<text x="70" y="79" font-size="8" fill="#b9b0cc" text-anchor="middle">rhythm gtr / toms</text>
+<text x="270" y="66" font-size="10" fill="#6aa8ff" text-anchor="middle">RIGHT</text>
+<text x="270" y="79" font-size="8" fill="#b9b0cc" text-anchor="middle">lead gtr / keys / FX</text>
+<text x="170" y="94" font-size="9" fill="#57e6a8" text-anchor="middle">WIDE: pads / ambience / overheads</text>
+</svg>
+</section>
+<section class="cheat-card">
+<h3>Quick effects guide</h3>
+<p class="sub">Send, do not insert (except saturation + limiter). Less is more.</p>
+<dl class="kv">
+<dt>Reverb</dt><dd>Space + depth. Short room for drums, hall for vocals. High-pass it at ~200 Hz.</dd>
+<dt>Delay</dt><dd>Repeats + groove. Slapback 80-140 ms for thickness, 1/8 dotted for width.</dd>
+<dt>Chorus</dt><dd>Width + movement. Subtle on guitars and keys, skip on kick and bass.</dd>
+<dt>Saturation</dt><dd>Warmth + character. A touch on bass, vocals, mix bus glues everything.</dd>
+<dt>Limiter</dt><dd>Safety net on the master. Catch 1-2 dB of peaks only - mixing is not mastering.</dd>
+</dl>
+<h4>Mixing board - signal flow</h4>
+<div class="strip">
+<div><b>TRIM</b>input level</div>
+<div><b>EQ</b>shape tone</div>
+<div><b>AUX</b>to FX</div>
+<div><b>PAN</b>stereo spot</div>
+<div><b>MUTE</b>silence / solo</div>
+<div><b>FADER</b>track level</div>
+</div>
+<h4>Waveforms at a glance</h4>
+<svg class="cheat-svg" viewBox="0 0 340 150" role="img" aria-label="Four basic waveforms">
+<g stroke-width="2.5" fill="none">
+<text x="10" y="14" font-size="9" fill="#b9b0cc" stroke="none">SINE pure/sub</text>
+<path d="M10 22 Q25 22 32 34 Q39 46 54 46 Q69 46 76 34 Q83 22 98 22" stroke="#57e6a8"/>
+<text x="180" y="14" font-size="9" fill="#b9b0cc" stroke="none">SQUARE hollow/retro</text>
+<path d="M180 46 L180 24 L205 24 L205 46 L230 46 L230 24 L255 24 L255 46" stroke="#6aa8ff"/>
+<text x="10" y="72" font-size="9" fill="#b9b0cc" stroke="none">SAW bright/lead</text>
+<path d="M10 104 L40 82 L40 104 L70 82 L70 104 L100 82 L100 104" stroke="#ff5d5d"/>
+<text x="180" y="72" font-size="9" fill="#b9b0cc" stroke="none">TRIANGLE soft/mellow</text>
+<path d="M180 104 L195 82 L210 104 L225 82 L240 104 L255 82" stroke="#ffb84d"/>
+</g>
+</svg>
+</section>
+<section class="cheat-card">
+<h3>Frequency and note reference</h3>
+<p class="sub">Find the rumble fast: low E on bass ~41 Hz, kick fundamental ~50-60 Hz, middle C ~261 Hz.</p>
+<svg class="cheat-svg" viewBox="0 0 340 86" role="img" aria-label="Piano keyboard frequency reference">
+<g>
+<rect x="8" y="18" width="40" height="52" rx="3" fill="#f4f1ff"/>
+<rect x="50" y="18" width="40" height="52" rx="3" fill="#f4f1ff"/>
+<rect x="92" y="18" width="40" height="52" rx="3" fill="#f4f1ff"/>
+<rect x="134" y="18" width="40" height="52" rx="3" fill="#f4f1ff"/>
+<rect x="176" y="18" width="40" height="52" rx="3" fill="#f4f1ff"/>
+<rect x="218" y="18" width="40" height="52" rx="3" fill="#f4f1ff"/>
+<rect x="260" y="18" width="40" height="52" rx="3" fill="#f4f1ff"/>
+<rect x="32" y="18" width="22" height="32" rx="2" fill="#111"/>
+<rect x="74" y="18" width="22" height="32" rx="2" fill="#111"/>
+<rect x="158" y="18" width="22" height="32" rx="2" fill="#111"/>
+<rect x="200" y="18" width="22" height="32" rx="2" fill="#111"/>
+<rect x="242" y="18" width="22" height="32" rx="2" fill="#111"/>
+</g>
+<g font-size="9" fill="#b9b0cc" text-anchor="middle">
+<text x="28" y="12">C0 16Hz</text><text x="90" y="12">C1 33Hz</text><text x="155" y="12">C2 65Hz</text><text x="220" y="12">C3 131Hz</text><text x="285" y="12">C4 261Hz</text>
+</g>
+<text x="170" y="82" font-size="9" fill="#b9b0cc" text-anchor="middle">C5 ~523 Hz - C6 ~1046 Hz - 10 kHz brilliance - 20 kHz limit of hearing</text>
+</svg>
+</section>
+<section class="cheat-card">
+<h3>Pro mixing checklist</h3>
+<p class="sub">Run this before you bounce. If every box ticks, you are done.</p>
+<ul class="check">
+<li>Gain staged: peaks around -12 to -6 dBFS, bus under -6 dBFS</li>
+<li>Unnecessary lows rolled off every non-bass track</li>
+<li>Every element owns its frequency and pan space</li>
+<li>Dynamics controlled - no jumps, no pumping</li>
+<li>EQ cuts are clean, boosts are small and sweet</li>
+<li>Reverb and delay sit behind the dry sound, not on top</li>
+<li>Levels balanced at low volume and on small speakers</li>
+<li>Checked on two systems + one reference track</li>
+</ul>
+<p class="sub">Tip: export, take a 10-minute break, listen once on earbuds. Fix one thing, not ten.</p>
+</section>
+</div>
+<p class="mbz-note" style="margin:14px 0 0">Built for magicbeatz - condensed from the classic Audio Mixing Cheat Sheet, redacted for beatmakers. <a href="./index.html" style="color:#57e6a8">Back to the console</a></p>
+</div>
+</body>
+</html>

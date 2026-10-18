@@ -9,6 +9,7 @@ export default defineConfig({
     rollupOptions: {
       input: {
         main: resolve(__dirname, 'index.html'),
+        mixing: resolve(__dirname, 'mixing.html'),
       },
     },
   },
