@@ -2,7 +2,7 @@
  * magicbeatz console — standalone AKAI MPK mini console (src/app/console.js).
  * Composition root: transport + pads + keys + grid + MIDI wiring.
  */
-import { getAudioContext } from '../audio/context.js';
+import { getAudioContext, ensureAudio } from '../audio/context.js';
 import {
   clampBpm, clamp01, beatsFromTimeSignature, totalSteps,
   DEFAULT_VELOCITY, INSTRUMENT_OPTIONS,
@@ -32,7 +32,7 @@ import {
 } from '../midi/notes.js';
 import { DEFAULT_KNOB_CC, DEFAULT_KNOB_VAL, DEFAULT_KEYS_INSTRUMENT } from '../state/settings.js';
 import { INSTRUMENT_CATEGORIES, resolveInstrument } from '../audio/instruments.js';
-import { ensureSample, isSampleReady, onSamplerStatus, preloadDefaults, samplerStatus } from '../audio/sampler.js';
+import { ensureSample, isSampleReady, onSamplerStatus, preloadDefaults, flushPendingLoads, samplerStatus } from '../audio/sampler.js';
 
 /** Standalone asset fetch: ./assets next to index.html. */
 function mbzAsset(path) {
@@ -92,8 +92,17 @@ const keyboardEl = $('[data-keyboard]');
 const keysInst = $('[data-keys-inst]');
 const keysCurveSel = $('[data-keys-curve]');
 const padEditorsEl = $('[data-pad-editors]');
+const midiMonitorEl = $('[data-midi-monitor]');
 const heldKeys = new Map();
 const heldPc = new Set();
+
+/** Last raw MIDI messages (newest first, max 5) for the monitor row. */
+const midiLog = [];
+function pushMidiLog(text) {
+  midiLog.unshift(text);
+  if (midiLog.length > 5) midiLog.pop();
+  if (midiMonitorEl) midiMonitorEl.textContent = `midi: ${midiLog.join(' · ')}`;
+}
 
 async function proveAssets() {
   const targets = ['notes.json', 'chords.json', 'scales-theory.json', 'chords-theory.json'];
@@ -219,6 +228,8 @@ function flashPad(padNum) {
 
 function auditionPad(bankId, padNum, velocity = 0.85) {
   if (!audition) return;
+  ensureAudio();
+  flushPendingLoads();
   const entry = padMap[bankId]?.[padNum];
   if (!entry) return;
   const vel = applyCurve(velocity, entry.curve) * clamp01(entry.gain ?? 0.9);
@@ -238,6 +249,8 @@ function auditionPad(bankId, padNum, velocity = 0.85) {
 function auditionKey(pitch, octave, holdId, velocity) {
   if (!audition) return;
   if (heldKeys.has(holdId)) return;
+  ensureAudio();
+  flushPendingLoads();
   const inst = keysInst.value || 'piano';
   const vel = applyCurve(velocity ?? 0.85, keysCurve);
   if (capturing) recordBuffer.push({ kind: 'key', pitch, octave, instrumentId: inst, t: getAudioContext().currentTime, velocity: vel });
@@ -493,6 +506,16 @@ function renderPadEditors() {
       learnBtn.textContent = 'learn midi note';
       learnBtn.addEventListener('click', () => setLearnSlot({ kind: 'pad', bank: b, pad: padNum }));
       card.appendChild(learnBtn);
+      // Bulk-learn: tap 8 hardware pads in P1..P8 order, adopts each ch+note.
+      if (padNum === 1) {
+        const bulkBtn = document.createElement('button');
+        bulkBtn.type = 'button';
+        bulkBtn.className = 'mbz-btn';
+        bulkBtn.textContent = `learn bank ${b} (tap P1–P8)`;
+        bulkBtn.title = 'Tap 8 hardware pads in order P1..P8 — each adopts its channel + note';
+        bulkBtn.addEventListener('click', () => setLearnSlot({ kind: 'pad-bulk', bank: b, pad: 1 }));
+        card.appendChild(bulkBtn);
+      }
       padEditorsEl.appendChild(card);
     }
   }
@@ -520,8 +543,25 @@ function applyKnob(index, value01) {
 }
 
 function onMidiNoteOn(note, velocity, channel) {
+  pushMidiLog(`ch ${(channel ?? 0) + 1} note ${note} vel ${Math.round(velocity * 127)}`);
   // Learn taps RAW midi first (DeepSeek: never learn from the routed stream).
   const slot = getLearnSlot();
+  if (slot?.kind === 'pad-bulk') {
+    const entry = padMap[slot.bank]?.[slot.pad];
+    if (entry) {
+      entry.midiNote = note;
+      if (channel != null) entry.midiChannel = channel;
+      savePadMap(padMap);
+    }
+    if (slot.pad >= 8) {
+      setLearnSlot(null);
+    } else {
+      setLearnSlot({ kind: 'pad-bulk', bank: slot.bank, pad: slot.pad + 1 });
+    }
+    renderPads();
+    renderPadEditors();
+    return;
+  }
   if (slot?.kind === 'pad') {
     const entry = padMap[slot.bank]?.[slot.pad];
     if (entry) {
@@ -560,6 +600,7 @@ function onMidiNoteOn(note, velocity, channel) {
 function onMidiNoteOff(note) { releaseKey(`midi:${note}`); }
 
 function onMidiCC(cc, value) {
+  pushMidiLog(`ch ? cc ${cc} val ${value}`);
   const slot = getLearnSlot();
   if (slot?.kind === 'knob') {
     knobCC[slot.index] = cc;
@@ -592,7 +633,8 @@ function updateMidiStatus(status) {
 }
 
 playBtn.addEventListener('click', () => {
-  getAudioContext();
+  ensureAudio();
+  flushPendingLoads();
   transport.start();
   setPlaying(true);
 });
@@ -673,7 +715,7 @@ document.querySelector('[data-capture]').addEventListener('click', (e) => {
   e.currentTarget.classList.toggle('is-on', capturing);
   if (capturing) {
     recordBuffer = [];
-    loopOriginTime = getAudioContext().currentTime;
+    loopOriginTime = ensureAudio().currentTime;
   } else if (recordBuffer.length) {
     const pat = activePattern();
     if (pat) {
@@ -821,7 +863,8 @@ renderKnobs();
 renderPadEditors();
 updateVelocityUi();
 proveAssets();
-// Samples load lazily; grand preloads at boot, synth fallback plays meanwhile.
+// Grand preload is gesture-gated (autoplay policy) — preloadDefaults marks
+// pending until first Play/pad/key tap, then flushPendingLoads() fires it.
 preloadDefaults();
 onSamplerStatus(() => renderKeysInstrumentOptions());
 keysInst.addEventListener('change', () => {

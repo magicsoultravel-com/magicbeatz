@@ -7,13 +7,7 @@
  * Firmware query: lazy sysex:true upgrade ONLY on button click, so normal
  * playing never triggers the Chrome SysEx permission prompt.
  */
-
-const FW_INQUIRY = [0xf0, 0x7e, 0x7f, 0x06, 0x01, 0xf7];
-const FW_TIMEOUT_MS = 1500;
-
-export function isMidiSupported() {
-  return typeof navigator !== 'undefined' && typeof navigator.requestMIDIAccess === 'function';
-}
+import { isMidiSupported } from './firmware.js';
 
 /**
  * @param {{

@@ -10,9 +10,12 @@
  *
  * Importing 'smplr' is static so Vite bundles it; samples themselves stream
  * from CDN on first use and are cached by smplr's storage.
+ *
+ * NOTE: static import keeps Vite builds working. Plain `file://` or static
+ * servers without a bundler need an import map — see index.html.
  */
 import { SplendidGrandPiano, Soundfont, Smolken, ElectricPiano } from 'smplr';
-import { getAudioContext, getMasterBus } from './context.js';
+import { ensureAudio, getMasterBus, peekAudioContext } from './context.js';
 import { pitchToMidi } from '../midi/notes.js';
 
 const statusListeners = new Set();
@@ -29,10 +32,13 @@ export function onSamplerStatus(fn) {
 }
 export function samplerStatus() { return status; }
 
-/** Registry id → smplr factory. Keep lazy: constructed on first request. */
+/** Registry id → smplr factory. Keep lazy: constructed on first gesture. */
 const FACTORIES = {
   grand: (ctx, dest) => SplendidGrandPiano(ctx, { destination: dest }),
-  'e-piano': (ctx, dest) => ElectricPiano(ctx, { destination: dest, instrument: 'WurlitzerEP200' }),
+  // Greg Sullivan Wurlitzer pack has corrupt/undecodable ogg on some builds
+  // (ab6mp.ogg EncodingError) — use FluidR3 GM e-piano from the same family
+  // as the working nylon path instead.
+  'e-piano': (ctx, dest) => Soundfont(ctx, { destination: dest, instrument: 'electric_piano_1', formats: ['m4a', 'ogg'] }),
   nylon: (ctx, dest) => Soundfont(ctx, { destination: dest, instrument: 'acoustic_guitar_nylon' }),
   upright: (ctx, dest) => Smolken(ctx, { destination: dest, instrument: 'Pizzicato' }),
 };
@@ -51,16 +57,24 @@ export function ensureSample(id) {
   if (pending.has(id)) return pending.get(id);
   const factory = FACTORIES[id];
   if (!factory) return Promise.resolve(null);
+  // No AudioContext before a gesture — mark pending, real load happens on
+  // first ensureAudio(). Avoids the Chrome autoplay warning entirely.
+  if (!peekAudioContext()) {
+    setStatus(id, 'pending-gesture');
+    return Promise.resolve(null);
+  }
   setStatus(id, 'loading');
   const p = (async () => {
     try {
-      const ctx = getAudioContext();
+      const ctx = ensureAudio();
       const inst = factory(ctx, getMasterBus());
       await inst.load;
       instances.set(id, { inst, ready: Promise.resolve(inst) });
       setStatus(id, 'ready');
       return inst;
     } catch (err) {
+      // One bad sample (e.g. corrupt ogg) must not hang the instrument in
+      // 'loading' — mark error so UI falls back to synth and can retry.
       console.warn(`[sampler] ${id} failed, synth fallback:`, err?.message || err);
       setStatus(id, 'error');
       return null;
@@ -76,9 +90,22 @@ export function isSampleReady(id) {
   return instances.has(id);
 }
 
-/** Preload the default piano at boot (fire-and-forget, non-blocking). */
+/** Preload the default piano — call only from a user gesture. */
 export function preloadDefaults() {
+  if (!peekAudioContext()) {
+    setStatus('grand', 'pending-gesture');
+    return;
+  }
   ensureSample('grand');
+}
+
+/** Kick off pending loads after first gesture (called by ensureAudio paths). */
+export function flushPendingLoads() {
+  for (const [id, state] of Object.entries(samplerStatus())) {
+    if (state === 'pending-gesture') ensureSample(id);
+  }
+  // Always want grand ready; if never requested, request now (post-gesture).
+  if (!instances.has('grand') && !pending.has('grand')) ensureSample('grand');
 }
 
 /**
@@ -94,7 +121,7 @@ export function playSample(id, pitch, octave, when, velocity = 0.8) {
   const midi = midiFor(pitch, octave);
   if (midi == null) return false;
   try {
-    const ctx = getAudioContext();
+    const ctx = peekAudioContext() || ensureAudio();
     const delay = when == null ? 0 : Math.max(0, when - ctx.currentTime);
     const time = delay > 0.001 ? ctx.currentTime + delay : undefined;
     entry.inst.start({ note: midi, velocity: Math.round(velocity * 127), time });

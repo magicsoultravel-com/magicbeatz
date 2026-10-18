@@ -4,6 +4,13 @@
  * Akai mfr = 0x47. Revision bytes e.g. 00 01 02 06 -> "01.26".
  * Returns { version, manufacturer, raw } or null if not an inquiry reply.
  */
+
+export const FW_INQUIRY = [0xf0, 0x7e, 0x7f, 0x06, 0x01, 0xf7];
+export const FW_TIMEOUT_MS = 1500;
+
+export function isMidiSupported() {
+  return typeof navigator !== 'undefined' && typeof navigator.requestMIDIAccess === 'function';
+}
 export function parseInquiryReply(data) {
   const bytes = Array.from(data || []);
   if (bytes.length < 10) return null;

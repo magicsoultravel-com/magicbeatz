@@ -7,6 +7,13 @@
   <title>magicbeatz — AKAI MPK mini console</title>
   <link rel="icon" type="image/svg+xml" href="./assets/favicon.svg">
   <link rel="stylesheet" href="./src/styles/app.css">
+  <script type="importmap">
+    {
+      "imports": {
+        "smplr": "https://cdn.jsdelivr.net/npm/smplr@1.1.0/dist/index.mjs"
+      }
+    }
+  </script>
 </head>
 <body>
   <div class="mbz-app">
@@ -77,6 +84,7 @@
             <label>pattern <select data-pattern></select></label>
           </div>
           <p class="mbz-note" data-project-note>project: magicbeatz-v1</p>
+          <p class="mbz-note" data-midi-monitor title="Last raw MIDI message — tap hardware to see its channel + note">midi: —</p>
         </div>
         <div class="mbz-block mbz-pads-block">
           <h2>pads <span class="mbz-hint">Bank <b data-bank-label>A</b> · tap = play · gear = map</span></h2>
