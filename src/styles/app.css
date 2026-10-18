@@ -39,14 +39,44 @@ body {
 .mbz-hint { text-transform: none; letter-spacing: 0; font-weight: 400; }
 .mbz-note { color: var(--mbz-dim); font-size: 12px; margin: 8px 0 0; }
 .mbz-knobs { display: grid; grid-template-columns: repeat(8, minmax(64px, 1fr)); gap: 8px; }
-.mbz-knob { background: var(--mbz-pad); border: 1px solid var(--mbz-line); border-radius: 12px; padding: 8px 6px; text-align: center; }
-.mbz-knob-dial { width: 44px; height: 44px; border-radius: 50%; margin: 0 auto 6px; background: conic-gradient(var(--mbz-accent) calc(var(--v, 0) * 1turn), #100e15 0); border: 2px solid #000; position: relative; }
+.mbz-knob { background: var(--mbz-pad); border: 1px solid var(--mbz-line); border-radius: 12px; padding: 8px 6px; text-align: center; position: relative; }
+.mbz-knob-dial { width: 44px; height: 44px; border-radius: 50%; margin: 0 auto 6px; background: conic-gradient(var(--knob-group, var(--mbz-accent)) calc(var(--v, 0) * 1turn), #100e15 0); border: 2px solid #000; position: relative; cursor: pointer; }
 .mbz-knob-dial::after { content: ""; position: absolute; left: 50%; top: 3px; width: 3px; height: 12px; background: #fff; border-radius: 2px; transform-origin: 50% 19px; transform: translateX(-50%) rotate(calc(var(--v, 0) * 270deg - 135deg)); }
-.mbz-knob b { display: block; font-size: 12px; }
+.mbz-knob-dial.is-waiting { outline: 2px dashed var(--mbz-accent-3); outline-offset: 2px; animation: mbz-pulse 0.8s infinite alternate; }
+.mbz-knob-dial.is-stale { opacity: 0.55; filter: saturate(0.4); }
+.mbz-knob-dial.is-unmapped { filter: grayscale(0.8); opacity: 0.6; }
+@keyframes mbz-pulse { from { outline-color: var(--mbz-accent-3); } to { outline-color: transparent; } }
+.mbz-knob b { display: flex; align-items: center; justify-content: center; gap: 5px; font-size: 12px; }
+.mbz-knob-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--knob-group, #8a8496); display: inline-block; }
 .mbz-knob small { color: var(--mbz-dim); font-size: 11px; display: block; min-height: 14px; }
-.mbz-knob button { margin-top: 6px; font-size: 11px; width: 100%; background: #191722; color: var(--mbz-text); border: 1px solid var(--mbz-line); border-radius: 8px; padding: 4px; }
+.mbz-knob-target { color: var(--mbz-text); font-weight: 600; min-height: 15px; }
+.mbz-knob-val { color: var(--mbz-accent-2); font-variant-numeric: tabular-nums; }
+.mbz-knob-cc { opacity: 0.75; }
+.mbz-knob-warn { color: #ffb84d; }
+.mbz-knob.is-stale { border-style: dashed; }
+.mbz-knob.is-unmapped { opacity: 0.85; }
+.mbz-knob button { margin-top: 6px; font-size: 11px; width: 100%; background: #191722; color: var(--mbz-text); border: 1px solid var(--mbz-line); border-radius: 8px; padding: 4px; cursor: pointer; }
 .mbz-knob button.is-learning { background: var(--mbz-accent-3); color: #081020; }
+.mbz-knob-assign { border-color: var(--knob-group, var(--mbz-line)); }
+/* Assign popover */
+.mbz-knob-pop { position: absolute; z-index: 30; top: calc(100% + 6px); left: 50%; transform: translateX(-50%); width: 220px; background: #17141f; border: 1px solid var(--mbz-line); border-radius: 12px; padding: 10px; text-align: left; box-shadow: 0 12px 32px rgba(0,0,0,0.5); }
+.mbz-knob-pop h4 { margin: 0 0 8px; font-size: 13px; display: flex; justify-content: space-between; align-items: baseline; }
+.mbz-knob-pop h4 span { font-size: 11px; color: var(--mbz-dim); font-weight: 400; }
+.mbz-knob-pop label { display: grid; gap: 4px; font-size: 11px; color: var(--mbz-dim); margin-bottom: 6px; }
+.mbz-knob-pop select, .mbz-knob-pop input { background: #121016; color: var(--mbz-text); border: 1px solid var(--mbz-line); border-radius: 8px; padding: 6px; font-size: 12px; width: 100%; }
+.mbz-knob-pop-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.mbz-knob-pop-val { font-size: 12px; color: var(--mbz-accent-2); margin: 6px 0; font-variant-numeric: tabular-nums; }
+.mbz-knob-pop-row { display: flex; gap: 6px; }
+.mbz-knob-pop-row .mbz-btn { flex: 1; padding: 6px 4px; font-size: 11px; }
 .mbz-warn { color: #ffb84d; font-size: 12px; margin: 4px 0; }
+
+/* Master FX strip — views on the same params knobs write to */
+.mbz-fx-strip { margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--mbz-line); }
+.mbz-fx-strip h3 { margin: 0 0 8px; font-size: 12px; text-transform: uppercase; letter-spacing: 0.1em; color: var(--mbz-dim); }
+.mbz-fx-grid { display: grid; gap: 6px; }
+.mbz-fx-grid label { display: grid; grid-template-columns: 44px 1fr 58px; gap: 8px; align-items: center; font-size: 11px; color: var(--mbz-dim); }
+.mbz-fx-grid input[type="range"] { accent-color: #c07bff; width: 100%; }
+.mbz-fx-grid span { text-align: right; font-variant-numeric: tabular-nums; color: var(--mbz-accent-2); font-size: 11px; }
 .mbz-transport-grid { display: grid; grid-template-columns: auto auto 1fr 1fr; gap: 8px; align-items: end; }
 .mbz-transport-grid label { display: grid; gap: 4px; font-size: 12px; color: var(--mbz-dim); }
 .mbz-transport-grid input, .mbz-transport-grid select, .mbz-keys-bar select, .mbz-pad-editor select, .mbz-pad-editor input { background: #121016; color: var(--mbz-text); border: 1px solid var(--mbz-line); border-radius: 8px; padding: 6px; font-size: 13px; max-width: 100%; }
@@ -89,7 +119,8 @@ body {
 /* quick-link nav (console <-> cheat sheet) */
 .mbz-topbar { flex-wrap: wrap; }
 .mbz-nav { display: flex; gap: 6px; align-items: center; }
-.mbz-nav-link { color: var(--mbz-dim); text-decoration: none; font-size: 13px; font-weight: 600; border: 1px solid var(--mbz-line); border-radius: 999px; padding: 7px 14px; background: var(--mbz-panel); white-space: nowrap; }
+.mbz-nav-link { color: var(--mbz-dim); text-decoration: none; font-size: 12px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; border: 1px solid var(--mbz-line); border-radius: 999px; padding: 6px 12px; background: var(--mbz-panel); white-space: nowrap; display: inline-flex; align-items: center; gap: 6px; }
+.mbz-nav-link svg { display: block; }
 .mbz-nav-link:hover { color: var(--mbz-text); border-color: var(--mbz-accent-2); }
 .mbz-nav-link.is-active { background: var(--mbz-accent-2); color: #08130d; border-color: transparent; }
 @media (max-width: 760px) { .mbz-top-status { flex-wrap: wrap; } }

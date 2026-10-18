@@ -30,7 +30,14 @@ import {
   PITCH_ORDER, pitchOctFromMidi, pitchToMidi, midiFromBase,
   PC_NOTE_OFFSETS, midiRangeForKeys,
 } from '../midi/notes.js';
-import { DEFAULT_KNOB_CC, DEFAULT_KNOB_VAL, DEFAULT_KEYS_INSTRUMENT } from '../state/settings.js';
+import { DEFAULT_KEYS_INSTRUMENT } from '../state/settings.js';
+import { getMasterBus, peekMasterGain } from '../audio/context.js';
+import { getFxChain } from '../audio/fx.js';
+import { registerCoreParams, registerChannelGains, resolveBinding, syncDelayToBpm } from '../params/coreParams.js';
+import { loadKnobMap, saveKnobMap, bindingFor, knobConflicts } from '../params/bindings.js';
+import { dispatchCC, refreshKnobUIFromParams } from '../params/dispatch.js';
+import { listParamsByGroup, getParam, PARAM_GROUPS } from '../params/registry.js';
+import { paramToNorm, normToParam } from '../params/scale.js';
 import { INSTRUMENT_CATEGORIES, resolveInstrument } from '../audio/instruments.js';
 import { ensureSample, isSampleReady, onSamplerStatus, preloadDefaults, flushPendingLoads, samplerStatus } from '../audio/sampler.js';
 
@@ -62,9 +69,11 @@ let recordBuffer = [];
 let loopOriginTime = 0;
 let selectedCell = null;
 let keysCurve = 'linear';
-let knobCC = [...DEFAULT_KNOB_CC];
-let knobVal = [...DEFAULT_KNOB_VAL];
+// Approach B: knob slots + param bindings (persisted in magicbeatz-knobmap-v1).
+let knobMap = loadKnobMap();
 let joyX = 0, joyY = 0;
+let knobPopoverKnob = null; // knobId with open assign popover
+let knobUiNorm = {}; // knobId -> last norm for dial arcs
 
 // ---------- dom ----------
 const $ = (sel) => document.querySelector(sel);
@@ -93,6 +102,12 @@ const keysInst = $('[data-keys-inst]');
 const keysCurveSel = $('[data-keys-curve]');
 const padEditorsEl = $('[data-pad-editors]');
 const midiMonitorEl = $('[data-midi-monitor]');
+const fxFilter = $('[data-fx-filter]');
+const fxFilterVal = $('[data-fx-filter-val]');
+const fxDelay = $('[data-fx-delay]');
+const fxDelayVal = $('[data-fx-delay-val]');
+const fxVerb = $('[data-fx-verb]');
+const fxVerbVal = $('[data-fx-verb-val]');
 const heldKeys = new Map();
 const heldPc = new Set();
 
@@ -418,21 +433,200 @@ function renderPatterns() {
 
 function renderKnobs() {
   knobsEl.innerHTML = '';
-  knobCC.forEach((cc, i) => {
+  const conflicts = knobConflicts(knobMap);
+  knobMap.knobs.forEach((knob) => {
+    const binding = bindingFor(knobMap, knob.id);
+    const resolved = binding?.paramId
+      ? resolveBinding(binding, activePattern())
+      : { desc: null, stale: false };
+    const desc = resolved.desc;
+    const stale = resolved.stale;
+    const group = desc ? PARAM_GROUPS[desc.group] : PARAM_GROUPS.unmapped;
+    const label = desc ? (desc.short || desc.label) : '—';
+    let live = null;
+    try { live = desc?.get(); } catch { live = null; }
+    const valText = desc && live != null ? desc.format(live) : '—';
+    let norm = 0;
+    try { norm = desc && live != null ? paramToNorm(live, binding, desc) : 0; } catch { norm = 0; }
+    knobUiNorm[knob.id] = norm;
+    const warn = conflicts.get(knob.id);
     const wrap = document.createElement('div');
-    wrap.className = 'mbz-knob';
-    wrap.innerHTML = `<div class="mbz-knob-dial" style="--v:${knobVal[i].toFixed(3)}"></div><b>K${i + 1}</b><small>CC ${cc}</small>`;
-    const btn = document.createElement('button');
-    btn.type = 'button';
-    btn.textContent = getLearnSlot()?.kind === 'knob' && getLearnSlot()?.index === i ? '…waiting' : 'learn';
-    if (getLearnSlot()?.kind === 'knob' && getLearnSlot()?.index === i) btn.classList.add('is-learning');
-    btn.addEventListener('click', () => {
-      setLearnSlot({ kind: 'knob', index: i });
+    wrap.className = `mbz-knob${stale ? ' is-stale' : ''}${!desc ? ' is-unmapped' : ''}`;
+    wrap.style.setProperty('--knob-group', group?.color || '#8a8496');
+    wrap.dataset.knob = knob.id;
+    const dial = document.createElement('div');
+    dial.className = 'mbz-knob-dial';
+    dial.style.setProperty('--v', norm.toFixed(3));
+    dial.title = `${knob.id} · CC ${knob.cc} · ${desc ? desc.label : 'unmapped'} · ${valText}`;
+    dial.addEventListener('click', () => openKnobPopover(knob.id));
+    wrap.appendChild(dial);
+    const title = document.createElement('b');
+    title.innerHTML = `<span class="mbz-knob-dot"></span>${esc(knob.id)}`;
+    wrap.appendChild(title);
+    const tgt = document.createElement('small');
+    tgt.className = 'mbz-knob-target';
+    tgt.textContent = label;
+    wrap.appendChild(tgt);
+    const valEl = document.createElement('small');
+    valEl.className = 'mbz-knob-val';
+    valEl.textContent = valText;
+    wrap.appendChild(valEl);
+    const ccEl = document.createElement('small');
+    ccEl.className = 'mbz-knob-cc';
+    ccEl.textContent = `CC ${knob.cc}`;
+    wrap.appendChild(ccEl);
+    if (warn) {
+      const w = document.createElement('small');
+      w.className = 'mbz-knob-warn';
+      w.textContent = '⚠';
+      w.title = warn.join('; ');
+      wrap.appendChild(w);
+    }
+    if (stale) {
+      const s = document.createElement('small');
+      s.className = 'mbz-knob-warn';
+      s.textContent = 'stale';
+      wrap.appendChild(s);
+    }
+    const assignBtn = document.createElement('button');
+    assignBtn.type = 'button';
+    assignBtn.className = 'mbz-knob-assign';
+    assignBtn.textContent = knobPopoverKnob === knob.id ? 'close' : 'assign';
+    assignBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (knobPopoverKnob === knob.id) closeKnobPopover();
+      else openKnobPopover(knob.id);
+    });
+    wrap.appendChild(assignBtn);
+    const slot = getLearnSlot();
+    const armed = (slot?.kind === 'knob' || slot?.kind === 'knob-cc')
+      && (slot.knobId === knob.id || slot.index === knobMap.knobs.indexOf(knob));
+    const learnBtn = document.createElement('button');
+    learnBtn.type = 'button';
+    if (armed) learnBtn.classList.add('is-learning');
+    learnBtn.textContent = armed ? '…wiggle' : 'learn';
+    learnBtn.title = `MIDI learn: next CC binds to ${knob.id}`;
+    learnBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (armed) { setLearnSlot(null); renderKnobs(); return; }
+      setLearnSlot({ kind: 'knob-cc', knobId: knob.id });
       renderKnobs();
     });
-    wrap.appendChild(btn);
+    wrap.appendChild(learnBtn);
     knobsEl.appendChild(wrap);
   });
+  if (knobPopoverKnob) renderKnobPopover();
+}
+
+function renderKnobPopover() {
+  document.querySelector('.mbz-knob-pop')?.remove();
+  const knobId = knobPopoverKnob;
+  if (!knobId) return;
+  const knob = knobMap.knobs.find((k) => k.id === knobId);
+  const binding = bindingFor(knobMap, knobId);
+  const card = knobsEl.querySelector(`[data-knob="${knobId}"]`);
+  if (!knob || !binding || !card) return;
+  const pop = document.createElement('div');
+  pop.className = 'mbz-knob-pop';
+  const curveOpts = ['linear', 'exp', 'step']
+    .map((c) => `<option value="${c}"${binding.curve === c ? ' selected' : ''}>${c}</option>`).join('');
+  const modeOpts = ['absolute', 'pickup', 'relative']
+    .map((m) => `<option value="${m}"${knob.mode === m ? ' selected' : ''}>${m}</option>`).join('');
+  pop.innerHTML = `<h4>${esc(knobId)} <span>CC ${knob.cc}</span></h4>`
+    + `<label>controls<select data-p="param">${knobTargetOptions(binding.paramId)}</select></label>`
+    + `<div class="mbz-knob-pop-grid">`
+    + `<label>min<input data-p="min" type="number" min="0" max="1" step="0.01"></label>`
+    + `<label>max<input data-p="max" type="number" min="0" max="1" step="0.01"></label>`
+    + `<label>curve<select data-p="curve">${curveOpts}</select></label>`
+    + `<label>mode<select data-p="mode">${modeOpts}</select></label>`
+    + `</div><p class="mbz-knob-pop-val" data-p="liveval"></p>`
+    + `<div class="mbz-knob-pop-row">`
+    + `<button type="button" class="mbz-btn" data-p="midi">midi learn</button>`
+    + `<button type="button" class="mbz-btn" data-p="clear">clear</button>`
+    + `<button type="button" class="mbz-btn" data-p="done">done</button></div>`
+    + `<p class="mbz-note">absolute = direct · pickup = no jumps · relative = endless</p>`;
+  pop.querySelector('[data-p="min"]').value = String(binding.min ?? 0);
+  pop.querySelector('[data-p="max"]').value = String(binding.max ?? 1);
+  pop.querySelector('[data-p="param"]').addEventListener('change', (e) => {
+    binding.paramId = e.target.value || null;
+    saveKnobMap(knobMap);
+    renderKnobs();
+  });
+  const bindNum = (key) => pop.querySelector(`[data-p="${key}"]`).addEventListener('change', (e) => {
+    binding[key] = Math.min(1, Math.max(0, Number(e.target.value) || 0));
+    saveKnobMap(knobMap);
+    syncParamRegistry();
+    renderKnobs();
+  });
+  bindNum('min');
+  bindNum('max');
+  pop.querySelector('[data-p="curve"]').addEventListener('change', (e) => {
+    binding.curve = e.target.value;
+    saveKnobMap(knobMap);
+    renderKnobs();
+  });
+  pop.querySelector('[data-p="mode"]').addEventListener('change', (e) => {
+    knob.mode = e.target.value;
+    saveKnobMap(knobMap);
+    renderKnobs();
+  });
+  pop.querySelector('[data-p="midi"]').addEventListener('click', () => {
+    setLearnSlot({ kind: 'knob-cc', knobId });
+    renderKnobs();
+  });
+  pop.querySelector('[data-p="clear"]').addEventListener('click', () => {
+    binding.paramId = null;
+    saveKnobMap(knobMap);
+    renderKnobs();
+  });
+  pop.querySelector('[data-p="done"]').addEventListener('click', closeKnobPopover);
+  card.appendChild(pop);
+  renderKnobPopoverValues();
+}
+
+function openKnobPopover(knobId) {
+  knobPopoverKnob = knobId;
+  renderKnobs();
+}
+function closeKnobPopover() {
+  knobPopoverKnob = null;
+  renderKnobs();
+}
+
+function knobTargetOptions(selectedId) {
+  const byGroup = listParamsByGroup();
+  const order = ['transport', 'mix', 'synth'];
+  let html = `<option value="">— unmapped —</option>`;
+  for (const g of order) {
+    const items = byGroup[g] || [];
+    if (!items.length) continue;
+    const label = PARAM_GROUPS[g]?.label || g;
+    html += `<optgroup label="${esc(label)}">`;
+    for (const d of items) {
+      const sel = d.id === selectedId ? ' selected' : '';
+      const dis = d.disabled ? ' disabled' : '';
+      const soon = d.disabled ? ' (soon)' : '';
+      html += `<option value="${esc(d.id)}"${sel}${dis}>${esc(d.label)}${soon}</option>`;
+    }
+    html += `</optgroup>`;
+  }
+  return html;
+}
+
+function renderKnobPopoverValues() {
+  const pop = document.querySelector('.mbz-knob-pop');
+  if (!pop || !knobPopoverKnob) return;
+  const binding = bindingFor(knobMap, knobPopoverKnob);
+  const el = pop.querySelector('[data-p="liveval"]');
+  if (!el) return;
+  const resolved = binding?.paramId
+    ? resolveBinding(binding, activePattern())
+    : { desc: null, stale: false };
+  if (!resolved.desc) { el.textContent = 'unmapped — pick a target'; return; }
+  let live = null;
+  try { live = resolved.desc.get(); } catch { live = null; }
+  const txt = live == null ? '—' : resolved.desc.format(live);
+  el.textContent = `${resolved.desc.label}: ${txt}${resolved.stale ? ' · stale (pattern changed)' : ''}`;
 }
 
 function renderPadEditors() {
@@ -521,25 +715,53 @@ function renderPadEditors() {
   }
 }
 
-function applyKnob(index, value01) {
-  knobVal[index] = value01;
-  if (index === 0) {
-    project.swing = clamp01(value01);
-    swingInput.value = String(Math.round(value01 * 100));
-    swingVal.textContent = `${Math.round(value01 * 100)}%`;
-    persist();
-  } else if (index === 1) {
-    const bpm = Math.round(60 + value01 * 140);
-    bpmInput.value = String(bpm);
-    project.bpm = clampBpm(bpm);
-    persist();
-  } else {
-    const pat = activePattern();
-    const ch = pat?.channels[index - 2];
-    if (ch) { ch.gain = clamp01(value01); persist(); }
+/**
+ * Register core + dynamic params, then paint knob arcs from live values.
+ * Called on boot and whenever patterns/channels change.
+ */
+function syncParamRegistry() {
+  registerChannelGains(activePattern(), { persist, renderGrid });
+  refreshKnobUIFromParams(knobMap, activePattern, paintKnobArc);
+}
+
+/** Callback from dispatch: update dial arc + readout without re-render. */
+function paintKnobArc(knobId, { norm, stale, waiting, unmapped } = {}) {
+  if (typeof norm === 'number') knobUiNorm[knobId] = norm;
+  const idx = knobMap.knobs.findIndex((k) => k.id === knobId);
+  const card = knobsEl.children[idx];
+  if (!card) return;
+  const dial = card.querySelector('.mbz-knob-dial');
+  const valEl = card.querySelector('[data-knob-val]');
+  const binding = bindingFor(knobMap, knobId);
+  const { desc } = binding?.paramId
+    ? resolveBinding(binding, activePattern())
+    : { desc: null };
+  const n = typeof norm === 'number' ? norm : (knobUiNorm[knobId] ?? 0);
+  if (dial) {
+    dial.style.setProperty('--v', n.toFixed(3));
+    dial.classList.toggle('is-waiting', !!waiting);
+    dial.classList.toggle('is-stale', !!stale);
+    dial.classList.toggle('is-unmapped', !!unmapped || !desc);
   }
-  const dial = knobsEl.children[index]?.querySelector('.mbz-knob-dial');
-  if (dial) dial.style.setProperty('--v', value01.toFixed(3));
+  if (valEl) {
+    if (!desc || unmapped) valEl.textContent = '—';
+    else {
+      const live = (() => { try { return desc.get(); } catch { return null; } })();
+      valEl.textContent = live == null ? '—' : desc.format(live);
+    }
+  }
+}
+
+/** UI knob drag fallback: write through the same param path as MIDI. */
+function applyKnobDrag(knobId, value01) {
+  const binding = bindingFor(knobMap, knobId);
+  if (!binding?.paramId) return;
+  const { desc } = resolveBinding(binding, activePattern());
+  if (!desc || desc.disabled) return;
+  try { desc.set(normToParam(value01, binding, desc)); } catch { /* ignore */ }
+  paintKnobArc(knobId, { norm: value01 });
+  syncControlsFromProject();
+  if (knobPopoverKnob) renderKnobPopoverValues();
 }
 
 function onMidiNoteOn(note, velocity, channel) {
@@ -599,17 +821,38 @@ function onMidiNoteOn(note, velocity, channel) {
 
 function onMidiNoteOff(note) { releaseKey(`midi:${note}`); }
 
-function onMidiCC(cc, value) {
-  pushMidiLog(`ch ? cc ${cc} val ${value}`);
+function onMidiCC(cc, value, channel) {
+  pushMidiLog(`cc ${cc} val ${value}`);
   const slot = getLearnSlot();
-  if (slot?.kind === 'knob') {
-    knobCC[slot.index] = cc;
+  // Split Learn: knob-cc (which physical knob am I?) vs knob-param (not used here).
+  if (slot?.kind === 'knob' || slot?.kind === 'knob-cc') {
+    const knobId = slot.knobId ?? knobMap.knobs[slot.index]?.id;
+    const knob = knobMap.knobs.find((k) => k.id === knobId);
+    if (knob) {
+      knob.cc = cc & 0x7f;
+      if (channel != null) knob.channel = null; // Any channel by default; strict in popover
+      saveKnobMap(knobMap);
+    }
     setLearnSlot(null);
     renderKnobs();
     return;
   }
-  const idx = knobCC.indexOf(cc);
-  if (idx >= 0) applyKnob(idx, value / 127);
+  // Channel-aware: knob with channel:null accepts any; strict knobs filter.
+  const hits = knobMap.knobs.filter((k) => k.cc === (cc & 0x7f)
+    && (k.channel == null || channel == null || k.channel === channel));
+  if (!hits.length) {
+    // Fallback: legacy index lookup during migration window
+    return;
+  }
+  dispatchCC({
+    cc: cc & 0x7f, value, map: knobMap,
+    getPattern: activePattern,
+    onKnobUI: paintKnobArc,
+  });
+  // Keep transport inputs + FX strip in sync (they are views on the same params)
+  syncControlsFromProject();
+  syncFxStrip();
+  if (knobPopoverKnob) renderKnobPopoverValues();
   if (cc === 1) {
     joyY = value / 127;
     joyDot.style.top = `${(1 - joyY) * 100}%`;
@@ -634,6 +877,9 @@ function updateMidiStatus(status) {
 
 playBtn.addEventListener('click', () => {
   ensureAudio();
+  // First guaranteed gesture: build the FX chain now so the first knob
+  // sweep has no mid-play master-bus rewire hiccup.
+  try { getFxChain(); } catch { /* offline */ }
   flushPendingLoads();
   transport.start();
   setPlaying(true);
@@ -644,14 +890,18 @@ stopBtn.addEventListener('click', () => {
   setPlaying(false);
 });
 bpmInput.addEventListener('change', () => {
-  project.bpm = getBpm();
-  bpmInput.value = String(project.bpm);
-  persist();
+  try { getParam('bpm')?.set(getBpm()); } catch { project.bpm = getBpm(); persist(); }
+  syncControlsFromProject();
+  syncParamRegistry();
+  syncFxStrip();
+  syncDelayToBpm(project.bpm);
 });
 swingInput.addEventListener('input', () => {
-  project.swing = clamp01(parseInt(swingInput.value, 10) / 100);
-  swingVal.textContent = `${swingInput.value}%`;
-  persist();
+  try { getParam('swing')?.set(clamp01(parseInt(swingInput.value, 10) / 100)); }
+  catch { project.swing = clamp01(parseInt(swingInput.value, 10) / 100); persist(); }
+  syncControlsFromProject();
+  if (!knobPopoverKnob) refreshKnobUIFromParams(knobMap, activePattern, paintKnobArc);
+  else renderKnobPopoverValues();
 });
 sigSelect.addEventListener('change', () => {
   const [a, b] = sigSelect.value.split('/').map(Number);
@@ -675,6 +925,51 @@ patternSelect.addEventListener('change', () => {
   persist();
   renderGrid();
   renderPatterns();
+  syncParamRegistry();
+  renderKnobs();
+});
+
+/** FX strip: sliders are views on the same params knobs write to. */
+function syncFxStrip() {
+  try {
+    const f = getParam('filter');
+    const d = getParam('delayMix');
+    const r = getParam('reverbMix');
+    if (f && fxFilter) {
+      const n = paramToNorm(f.get(), { min: 0, max: 1, curve: 'linear' }, f);
+      fxFilter.value = String(Math.round(n * 100));
+      if (fxFilterVal) fxFilterVal.textContent = f.format(f.get());
+    }
+    if (d && fxDelay) {
+      fxDelay.value = String(Math.round(clamp01(d.get()) * 100));
+      if (fxDelayVal) fxDelayVal.textContent = d.format(d.get());
+    }
+    if (r && fxVerb) {
+      fxVerb.value = String(Math.round(clamp01(r.get()) * 100));
+      if (fxVerbVal) fxVerbVal.textContent = r.format(r.get());
+    }
+  } catch { /* pre-gesture */ }
+}
+if (fxFilter) fxFilter.addEventListener('input', () => {
+  try {
+    const f = getParam('filter');
+    if (f) f.set(f.fromNorm(clamp01(parseInt(fxFilter.value, 10) / 100)));
+  } catch { /* ignore */ }
+  syncFxStrip();
+  refreshKnobUIFromParams(knobMap, activePattern, paintKnobArc);
+  if (knobPopoverKnob) renderKnobPopoverValues();
+});
+if (fxDelay) fxDelay.addEventListener('input', () => {
+  try { getParam('delayMix')?.set(clamp01(parseInt(fxDelay.value, 10) / 100)); } catch { /* ignore */ }
+  syncFxStrip();
+  refreshKnobUIFromParams(knobMap, activePattern, paintKnobArc);
+  if (knobPopoverKnob) renderKnobPopoverValues();
+});
+if (fxVerb) fxVerb.addEventListener('input', () => {
+  try { getParam('reverbMix')?.set(clamp01(parseInt(fxVerb.value, 10) / 100)); } catch { /* ignore */ }
+  syncFxStrip();
+  refreshKnobUIFromParams(knobMap, activePattern, paintKnobArc);
+  if (knobPopoverKnob) renderKnobPopoverValues();
 });
 velInput.addEventListener('input', () => {
   if (!selectedCell) return;
@@ -859,6 +1154,17 @@ renderPatterns();
 renderGrid();
 renderKeyboard();
 renderPads();
+// Approach B boot: static params first, then dynamics, then knobs.
+registerCoreParams({
+  getProject: () => project,
+  syncTransportUI: syncControlsFromProject,
+  persist,
+  getMasterGain: getMasterBus,
+  peekMasterGain: () => peekMasterGain() ?? 1,
+});
+syncParamRegistry();
+syncFxStrip();
+syncDelayToBpm(project.bpm);
 renderKnobs();
 renderPadEditors();
 updateVelocityUi();

@@ -10,6 +10,7 @@ export default defineConfig({
       input: {
         main: resolve(__dirname, 'index.html'),
         mixing: resolve(__dirname, 'mixing.html'),
+        theory: resolve(__dirname, 'theory.html'),
       },
     },
   },

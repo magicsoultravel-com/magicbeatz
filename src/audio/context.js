@@ -47,13 +47,41 @@ export function ensureAudio() {
   return getAudioContext();
 }
 
-/** Master bus — all voices connect here before destination. */
+/** Master bus — all voices connect here before destination.
+ *  When the FX chain is built, getFxChain() re-routes master -> filter -> dry.
+ *  Voices always connect to THIS node, so the rewire is transparent to them. */
 export function getMasterBus() {
   const ctx = getAudioContext();
   if (!masterGain || masterGain.context !== ctx) {
     masterGain = ctx.createGain();
     masterGain.gain.value = 1;
-    masterGain.connect(ctx.destination);
+    // If the FX chain already exists for this context it owns the routing;
+    // otherwise direct to destination until the chain is built.
+    try {
+      const fx = peekFxForContext(ctx);
+      if (fx) masterGain.connect(fx.toneFilter);
+      else masterGain.connect(ctx.destination);
+    } catch { masterGain.connect(ctx.destination); }
   }
   return masterGain;
+}
+
+/** Read-only peek — returns current gain without creating a context (null pre-gesture). */
+export function peekMasterGain() {
+  try {
+    if (!masterGain) return null;
+    return Math.min(1, Math.max(0, masterGain.gain.value));
+  } catch { return null; }
+}
+
+/**
+ * Cross-module hook so getMasterBus() can reconnect through the FX chain
+ * after a context reset, without context.js importing fx.js (cycle).
+ * fx.js registers its peek here on load.
+ */
+let fxPeek = null;
+export function registerFxPeek(fn) { fxPeek = fn; }
+function peekFxForContext(ctx) {
+  try { return typeof fxPeek === 'function' ? fxPeek(ctx) : null; }
+  catch { return null; }
 }
