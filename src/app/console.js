@@ -30,7 +30,9 @@ import {
   PITCH_ORDER, pitchOctFromMidi, pitchToMidi, midiFromBase,
   PC_NOTE_OFFSETS, midiRangeForKeys,
 } from '../midi/notes.js';
-import { DEFAULT_KNOB_CC, DEFAULT_KNOB_VAL } from '../state/settings.js';
+import { DEFAULT_KNOB_CC, DEFAULT_KNOB_VAL, DEFAULT_KEYS_INSTRUMENT } from '../state/settings.js';
+import { INSTRUMENT_CATEGORIES, resolveInstrument } from '../audio/instruments.js';
+import { ensureSample, isSampleReady, onSamplerStatus, preloadDefaults, samplerStatus } from '../audio/sampler.js';
 
 /** Standalone asset fetch: ./assets next to index.html. */
 function mbzAsset(path) {
@@ -746,8 +748,27 @@ function syncControlsFromProject() {
   swingVal.textContent = `${Math.round(clamp01(project.swing) * 100)}%`;
   sigSelect.value = `${project.timeSignature[0]}/${project.timeSignature[1]}`;
   barsSelect.value = String(getBars());
-  keysInst.innerHTML = INSTRUMENT_OPTIONS.map((o) => `<option value="${esc(o.id)}"${o.id === 'piano' ? ' selected' : ''}>${esc(o.label)}</option>`).join('');
+  renderKeysInstrumentOptions();
   updateProjectNote();
+}
+
+/** Grouped keys dropdown: optgroup per category, sample dot while loading. */
+function renderKeysInstrumentOptions() {
+  const current = keysInst.value || DEFAULT_KEYS_INSTRUMENT;
+  const statuses = samplerStatus();
+  const groups = INSTRUMENT_CATEGORIES.map((cat) => {
+    const opts = INSTRUMENT_OPTIONS
+      .filter((o) => o.category === cat)
+      .map((o) => {
+        const dot = o.engine === 'sample' ? (statuses[o.id] === 'ready' ? ' ●' : ' ○') : '';
+        return `<option value="${esc(o.id)}"${o.id === current ? ' selected' : ''}>${esc(o.label)}${dot}</option>`;
+      }).join('');
+    return opts ? `<optgroup label="${esc(cat)}">${opts}</optgroup>` : '';
+  }).join('');
+  keysInst.innerHTML = groups;
+  if (![...keysInst.options].some((o) => o.value === current)) {
+    keysInst.value = DEFAULT_KEYS_INSTRUMENT;
+  }
 }
 
 connectMbzMidi({
@@ -800,5 +821,14 @@ renderKnobs();
 renderPadEditors();
 updateVelocityUi();
 proveAssets();
+// Samples load lazily; grand preloads at boot, synth fallback plays meanwhile.
+preloadDefaults();
+onSamplerStatus(() => renderKeysInstrumentOptions());
+keysInst.addEventListener('change', () => {
+  const resolved = resolveInstrument(keysInst.value);
+  if (resolved.engine === 'sample' && !isSampleReady(resolved.id)) {
+    ensureSample(resolved.id).then(() => renderKeysInstrumentOptions());
+  }
+});
 if (imported) projectNote.textContent += ' · imported suite beats';
 

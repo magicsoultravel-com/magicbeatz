@@ -15,4 +15,4 @@ export const MIN_OCTAVE = 1;
 export const MAX_OCTAVE = 5;
 export const DEFAULT_OCTAVE = 3;
 
-export const DEFAULT_KEYS_INSTRUMENT = 'piano';
+export const DEFAULT_KEYS_INSTRUMENT = 'grand';

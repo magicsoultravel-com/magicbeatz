@@ -1,4 +1,5 @@
 /** Pattern / channel model helpers for magicBeatz. */
+import { instrumentOptions as registryOptions } from '../audio/instruments.js';
 
 export const STORAGE_KEY = 'guitarsuite-magicbeatz';
 export const STEPS_PER_BEAT = 4;
@@ -8,22 +9,7 @@ export const DEFAULT_GAIN = 0.8;
 
 export const CHANNEL_TYPES = ['percussion', 'note', 'chord'];
 
-export const INSTRUMENT_OPTIONS = [
-  { id: 'piano', label: 'piano', banks: ['note', 'chord'] },
-  { id: 'steel-drum', label: 'steel drum', banks: ['note'] },
-  { id: 'guitar', label: 'guitar', banks: ['note', 'chord'] },
-  { id: 'bass-sub', label: 'bass sub', banks: ['note'] },
-  { id: 'bass-growl', label: 'bass growl', banks: ['note'] },
-  { id: 'bass-pluck', label: 'bass pluck', banks: ['note'] },
-  { id: 'bass-finger', label: 'bass finger', banks: ['note'] },
-  { id: 'strings', label: 'strings', banks: ['note', 'chord'] },
-  { id: 'violin', label: 'violin', banks: ['note'] },
-  { id: 'keys-pluck', label: 'keys', banks: ['note', 'chord'] },
-  { id: 'keys-pad', label: 'pad', banks: ['note', 'chord'] },
-  { id: 'keys-bell', label: 'bell', banks: ['note', 'chord'] },
-  { id: 'lead-square', label: 'lead sq', banks: ['note'] },
-  { id: 'lead-saw', label: 'lead saw', banks: ['note'] },
-];
+export const INSTRUMENT_OPTIONS = registryOptions();
 
 let idCounter = 0;
 

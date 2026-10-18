@@ -4,6 +4,8 @@
  */
 import { getAudioContext, getMasterBus } from './context.js';
 import { pitchToIndex } from '../theory/music.js';
+import { resolveInstrument } from './instruments.js';
+import { ensureSample, isSampleReady, playSample, startSampleSustain, stopSampleSustain } from './sampler.js';
 
 function connectVoice(gainNode) {
   gainNode.connect(getMasterBus());
@@ -599,6 +601,7 @@ export function playBassFinger(pitch, octave, when, velocity = 0.8) {
 export const PITCHED_PLAYERS = {
   guitar: playGuitarTone,
   piano: playPiano,
+  'piano-synth': playPiano,
   'steel-drum': playSteelDrum,
   'bass-sub': playBassSub,
   'bass-growl': playBassGrowl,
@@ -615,6 +618,10 @@ export const PITCHED_PLAYERS = {
 
 /** Instruments that sustain while a key is held (keyboard). */
 export const SUSTAIN_INSTRUMENTS = new Set([
+  'grand',
+  'e-piano',
+  'nylon',
+  'upright',
   'piano',
   'guitar',
   'bass-sub',
@@ -641,7 +648,19 @@ function sustainKey(instrumentId, pitch, octave) {
  * Returns key string, or null if one-shot was used instead.
  */
 export function startPitchedSustain(instrumentId, pitch, octave, velocity = 0.85) {
-  const id = instrumentId || 'piano';
+  const resolved = resolveInstrument(instrumentId || 'grand');
+  if (resolved.engine === 'sample') {
+    const stopSample = startSampleSustain(resolved.id, pitch, octave, velocity);
+    if (stopSample) {
+      const key = `sample|${resolved.id}|${pitch}|${octave}|${Date.now().toString(36)}`;
+      sampleSustains.set(key, stopSample);
+      return key;
+    }
+    const fallback = resolveInstrument(resolved.fallback || 'piano');
+    const id = fallback.id;
+    void id;
+  }
+  const id = resolved.engine === 'sample' ? (resolved.fallback || 'piano') : resolved.id;
   const freq = pitchToFreq(pitch, octave);
   if (!freq) return null;
 
@@ -741,8 +760,15 @@ function sustainVoiceSpecs(id, freq) {
   return [{ type: 'triangle', freq, level: 1, attack: 0.02 }];
 }
 
+const sampleSustains = new Map();
+
 export function stopPitchedSustain(key) {
   if (!key) return;
+  if (sampleSustains.has(key)) {
+    stopSampleSustain(sampleSustains.get(key));
+    sampleSustains.delete(key);
+    return;
+  }
   const entry = activeSustains.get(key);
   if (!entry) return;
   activeSustains.delete(key);
@@ -766,6 +792,7 @@ export function stopPitchedSustain(key) {
 }
 
 export function stopAllPitchedSustain() {
+  for (const key of [...sampleSustains.keys()]) stopPitchedSustain(key);
   for (const key of [...activeSustains.keys()]) stopPitchedSustain(key);
 }
 
@@ -778,7 +805,14 @@ export function stopAllPitchedSustain() {
  * @param {number} [velocity]
  */
 export function playPitchedInstrument(instrumentId, pitch, octave, when, velocity = 0.8) {
-  const play = PITCHED_PLAYERS[instrumentId] || PITCHED_PLAYERS.guitar;
+  const resolved = resolveInstrument(instrumentId);
+  if (resolved.engine === 'sample') {
+    if (playSample(resolved.id, pitch, octave, when, velocity)) return;
+    const fallback = PITCHED_PLAYERS[resolved.fallback] || PITCHED_PLAYERS.guitar;
+    fallback(pitch, octave, when, velocity);
+    return;
+  }
+  const play = PITCHED_PLAYERS[resolved.id] || PITCHED_PLAYERS.guitar;
   play(pitch, octave, when, velocity);
 }
 
