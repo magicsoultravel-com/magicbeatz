@@ -38,11 +38,24 @@
           <div class="mbz-knobs" data-knobs></div>
         </div>
         <div class="mbz-block mbz-joystick-block">
-          <h2>stick</h2>
-          <div class="mbz-joystick" data-joystick aria-label="Joystick X/Y">
+          <h2>stick <span class="mbz-hint">X bend · Y mod · drag works w/o hw</span></h2>
+          <div class="mbz-joystick" data-joystick aria-label="Joystick X/Y — drag with mouse or touch">
             <div class="mbz-joystick-dot" data-joystick-dot></div>
           </div>
           <div class="mbz-joystick-readout" data-joystick-readout>X — · Y —</div>
+          <div class="mbz-stick-grid">
+            <label>X target <select data-stick-x></select></label>
+            <label>Y target <select data-stick-y></select></label>
+            <label>X src <select data-stick-xsrc></select></label>
+            <label>Y CC <span class="mbz-stick-ccrow"><input data-stick-ycc type="number" min="0" max="127" step="1"><button type="button" class="mbz-btn" data-stick-learn title="MIDI learn: next CC binds to stick Y">learn</button></span></label>
+            <label class="mbz-stick-check"><input type="checkbox" data-stick-springx checked> spring X</label>
+            <label class="mbz-stick-check"><input type="checkbox" data-stick-springy checked> spring Y</label>
+          </div>
+          <div class="mbz-stick-sliders">
+            <label>X <input type="range" data-stick-xslider min="-100" max="100" value="0"></label>
+            <label>Y <input type="range" data-stick-yslider min="0" max="127" value="0"></label>
+          </div>
+          <p class="mbz-note" data-stick-hint>hw silent? drag the dot or sliders — same targets.</p>
         </div>
         <div class="mbz-block">
           <h2>control</h2>
@@ -98,6 +111,36 @@
         <div class="mbz-block mbz-pads-block">
           <h2>pads <span class="mbz-hint">Bank <b data-bank-label>A</b> · tap = play · gear = map</span></h2>
           <div class="mbz-pads" data-pads></div>
+        </div>
+      </section>
+
+      <section class="mbz-row mbz-session-row" aria-label="Session — clip launcher and arrangement">
+        <div class="mbz-block mbz-session-block">
+          <h2>session <span class="mbz-hint">click a clip = queue at next bar · keys 1–8 · double-click = rename</span></h2>
+          <div class="mbz-session-tools">
+            <div class="mbz-mode-toggle" role="group" aria-label="Play mode">
+              <button type="button" class="mbz-btn" data-mode-live title="Live looper — clips queue at bar boundaries">live</button>
+              <button type="button" class="mbz-btn" data-mode-song title="Song mode — follows the arrangement timeline">song</button>
+            </div>
+            <button type="button" class="mbz-btn" data-launch-mode title="Map MPK pads P1–P8 to clip launch">launch pads</button>
+            <span class="mbz-session-spacer"></span>
+            <button type="button" class="mbz-btn" data-pattern-new title="Add an empty pattern">+ new</button>
+            <button type="button" class="mbz-btn" data-pattern-dup title="Duplicate the selected pattern">dup</button>
+            <button type="button" class="mbz-btn" data-pattern-ren title="Rename the selected pattern">ren</button>
+            <button type="button" class="mbz-btn" data-pattern-del title="Delete the selected pattern">del</button>
+          </div>
+          <div class="mbz-clips" data-clips aria-label="Clip launcher"></div>
+          <div class="mbz-arrange" aria-label="Arrangement timeline">
+            <div class="mbz-arrange-head">
+              <span>arrange <span class="mbz-hint" data-arrange-len>1 bar</span></span>
+              <span class="mbz-session-spacer"></span>
+              <label class="mbz-arrange-loop"><input type="checkbox" data-arrange-loop checked> loop</label>
+              <button type="button" class="mbz-btn" data-arrange-add title="Add a bar">+bar</button>
+              <button type="button" class="mbz-btn" data-arrange-del title="Remove the last bar">−bar</button>
+            </div>
+            <div class="mbz-arrange-track" data-arrange></div>
+          </div>
+          <p class="mbz-note">paint: click a bar to assign the selected pattern · click again = rest · song mode follows this timeline<span data-launch-hint></span></p>
         </div>
       </section>
 

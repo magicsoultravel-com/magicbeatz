@@ -2,7 +2,7 @@
  * Synth voices for magicBeatz — percussion one-shots + pitched instruments.
  * All route through the master bus.
  */
-import { getAudioContext, getMasterBus } from './context.js';
+import { getAudioContext, getMasterBus, peekAudioContext } from './context.js';
 import { pitchToIndex } from '../theory/music.js';
 import { resolveInstrument } from './instruments.js';
 import { ensureSample, isSampleReady, playSample, startSampleSustain, stopSampleSustain } from './sampler.js';
@@ -639,6 +639,43 @@ export const SUSTAIN_INSTRUMENTS = new Set([
 
 const activeSustains = new Map();
 
+/** Live stick performance state (joystick X/Y fallback when hardware is dead). */
+let stickBendCents = 0;
+let stickVibrato = 0; // 0..1
+const STICK_VIBRATO_MAX_CENTS = 45;
+const STICK_VIBRATO_HZ = 5.5;
+
+function applyStickToEntry(entry) {
+  if (!entry?.oscs) return;
+  const ctx = peekAudioContext();
+  const t = ctx ? ctx.currentTime : 0;
+  for (const o of entry.oscs) {
+    try {
+      const base = Number(o.baseDetune) || 0;
+      o.osc.detune.setTargetAtTime(base + stickBendCents, t, 0.015);
+    } catch { /* ignore */ }
+  }
+  for (const g of entry.vibGains || []) {
+    try {
+      g.gain.setTargetAtTime(stickVibrato * STICK_VIBRATO_MAX_CENTS, t, 0.03);
+    } catch { /* ignore */ }
+  }
+}
+
+/** Joystick X: bend held synth sustains ±cents. Samples can't bend — no-op there. */
+export function setStickBendCents(cents) {
+  const v = Number(cents);
+  stickBendCents = Number.isFinite(v) ? Math.min(400, Math.max(-400, v)) : 0;
+  for (const entry of activeSustains.values()) applyStickToEntry(entry);
+}
+
+/** Joystick Y (mod): vibrato depth on held synth sustains. */
+export function setStickVibrato(amount) {
+  const v = Number(amount);
+  stickVibrato = Number.isFinite(v) ? Math.min(1, Math.max(0, v)) : 0;
+  for (const entry of activeSustains.values()) applyStickToEntry(entry);
+}
+
 function sustainKey(instrumentId, pitch, octave) {
   return `${instrumentId}|${pitch}|${octave}`;
 }
@@ -677,6 +714,8 @@ export function startPitchedSustain(instrumentId, pitch, octave, velocity = 0.85
   const g = velGain(velocity, id === 'strings' || id === 'keys-pad' ? 0.12 : 0.2);
   const nodes = [];
   const gains = [];
+  const oscs = [];
+  const vibGains = [];
 
   const specs = sustainVoiceSpecs(id, freq);
   for (const spec of specs) {
@@ -684,7 +723,9 @@ export function startPitchedSustain(instrumentId, pitch, octave, velocity = 0.85
     const gain = ctx.createGain();
     osc.type = spec.type;
     osc.frequency.value = spec.freq;
-    if (spec.detune) osc.detune.value = spec.detune;
+    const baseDetune = (spec.detune || 0) + stickBendCents;
+    osc.detune.value = baseDetune;
+    oscs.push({ osc, baseDetune: spec.detune || 0 });
     let last = osc;
     if (spec.filterFreq) {
       const filter = ctx.createBiquadFilter();
@@ -713,9 +754,21 @@ export function startPitchedSustain(instrumentId, pitch, octave, velocity = 0.85
       lfo.start(t);
       nodes.push(lfo, lfoGain);
     }
+    // Always-on stick vibrato LFO (depth driven by stick Y, 0 = silent).
+    {
+      const vib = ctx.createOscillator();
+      const vibGain = ctx.createGain();
+      vib.frequency.value = STICK_VIBRATO_HZ;
+      vibGain.gain.value = stickVibrato * STICK_VIBRATO_MAX_CENTS;
+      vib.connect(vibGain);
+      vibGain.connect(osc.detune);
+      vib.start(t);
+      nodes.push(vib, vibGain);
+      vibGains.push(vibGain);
+    }
   }
 
-  activeSustains.set(key, { nodes, gains });
+  activeSustains.set(key, { nodes, gains, oscs, vibGains });
   return key;
 }
 

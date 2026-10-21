@@ -5,18 +5,20 @@
 import { getAudioContext, ensureAudio } from '../audio/context.js';
 import {
   clampBpm, clamp01, beatsFromTimeSignature, totalSteps,
+  stepsPerBar, createEmptyPattern,
   DEFAULT_VELOCITY, INSTRUMENT_OPTIONS,
 } from '../sequencer/pattern.js';
 import {
   getActivePattern, arrangementToSlots, slotsToArrangement,
-  arrangementLengthBars,
+  arrangementLengthBars, resolveArrangementStep, duplicatePattern,
+  MAX_ARRANGE_BARS,
 } from '../sequencer/project.js';
 import { createStepTransport } from '../sequencer/transport.js';
 import { playChannelHit } from '../audio/banks.js';
 import { playPercussionVoice } from '../audio/percussion.js';
 import {
   playPitchedInstrument, playPitchedChord, startPitchedSustain, stopPitchedSustain,
-  SUSTAIN_INSTRUMENTS,
+  SUSTAIN_INSTRUMENTS, setStickBendCents, setStickVibrato,
 } from '../audio/voices.js';
 import { chordEntriesFor } from '../theory/chords.js';
 import { loadMbzProject, saveMbzProject, resetMbzProject } from '../state/store.js';
@@ -35,6 +37,10 @@ import { getMasterBus, peekMasterGain } from '../audio/context.js';
 import { getFxChain } from '../audio/fx.js';
 import { registerCoreParams, registerChannelGains, resolveBinding, syncDelayToBpm } from '../params/coreParams.js';
 import { loadKnobMap, saveKnobMap, bindingFor, knobConflicts } from '../params/bindings.js';
+import {
+  loadStickMap, saveStickMap,
+  STICK_X_OPTIONS, STICK_Y_OPTIONS, STICK_X_SOURCES, BEND_RANGE_CENTS,
+} from '../params/stick.js';
 import { dispatchCC, refreshKnobUIFromParams } from '../params/dispatch.js';
 import { listParamsByGroup, getParam, PARAM_GROUPS } from '../params/registry.js';
 import { paramToNorm, normToParam } from '../params/scale.js';
@@ -69,8 +75,18 @@ let recordBuffer = [];
 let loopOriginTime = 0;
 let selectedCell = null;
 let keysCurve = 'linear';
+// Session — clip launcher + arrangement timeline (live looper / song mode).
+let queuedPatternId = null; // clip waiting to start at the next bar boundary
+let songPlayingPatternId = null; // pattern sounding under the current song bar
+let launchPads = false; // pads P1–P8 queue clips instead of auditioning
+let playbackUiActive = false; // playhead guard (transport may self-stop at song end)
+let renamePatternId = null; // pattern with an open inline rename editor
+const CLIP_COLORS = ['#ff5d5d', '#ffb84d', '#57e6a8', '#6aa8ff', '#c07bff', '#ff8ad8', '#4de1e8', '#9ae66e'];
+const MAX_CLIP_PATTERNS = 16;
+function clipColor(i) { return CLIP_COLORS[i % CLIP_COLORS.length]; }
 // Approach B: knob slots + param bindings (persisted in magicbeatz-knobmap-v1).
 let knobMap = loadKnobMap();
+let stickMap = loadStickMap();
 let joyX = 0, joyY = 0;
 let knobPopoverKnob = null; // knobId with open assign popover
 let knobUiNorm = {}; // knobId -> last norm for dial arcs
@@ -82,6 +98,17 @@ const assetPill = $('[data-asset-status]');
 const knobsEl = $('[data-knobs]');
 const joyDot = $('[data-joystick-dot]');
 const joyReadout = $('[data-joystick-readout]');
+const joyBox = $('[data-joystick]');
+const stickXSel = $('[data-stick-x]');
+const stickYSel = $('[data-stick-y]');
+const stickXSrcSel = $('[data-stick-xsrc]');
+const stickYccInput = $('[data-stick-ycc]');
+const stickLearnBtn = $('[data-stick-learn]');
+const stickSpringX = $('[data-stick-springx]');
+const stickSpringY = $('[data-stick-springy]');
+const stickXSlider = $('[data-stick-xslider]');
+const stickYSlider = $('[data-stick-yslider]');
+const stickHint = $('[data-stick-hint]');
 const octLabel = $('[data-oct-label]');
 const bankLabel = $('[data-bank-label]');
 const playBtn = $('[data-play]');
@@ -108,6 +135,21 @@ const fxDelay = $('[data-fx-delay]');
 const fxDelayVal = $('[data-fx-delay-val]');
 const fxVerb = $('[data-fx-verb]');
 const fxVerbVal = $('[data-fx-verb-val]');
+// Session block refs (added with the clip launcher + arrangement timeline).
+const modeLiveBtn = $('[data-mode-live]');
+const modeSongBtn = $('[data-mode-song]');
+const launchBtn = $('[data-launch-mode]');
+const launchHintEl = $('[data-launch-hint]');
+const clipsEl = $('[data-clips]');
+const arrangeEl = $('[data-arrange]');
+const arrangeLenEl = $('[data-arrange-len]');
+const arrangeLoopEl = $('[data-arrange-loop]');
+const arrangeAddBtn = $('[data-arrange-add]');
+const arrangeDelBtn = $('[data-arrange-del]');
+const patternNewBtn = $('[data-pattern-new]');
+const patternDupBtn = $('[data-pattern-dup]');
+const patternRenBtn = $('[data-pattern-ren]');
+const patternDelBtn = $('[data-pattern-del]');
 const heldKeys = new Map();
 const heldPc = new Set();
 
@@ -161,21 +203,104 @@ function persist() {
 }
 function updateProjectNote() {
   const pat = activePattern();
-  projectNote.textContent = `project: magicbeatz-v1 bpm ${project.bpm} ${pat?.name || '?'}${imported ? ' imported from suite' : ''}`;
+  const mode = project.playMode === 'song' ? 'song' : 'live';
+  const queued = queuedPatternId
+    ? ` → ${project.patterns.find((p) => p.id === queuedPatternId)?.name || '?'}`
+    : '';
+  projectNote.textContent = `project: magicbeatz-v1 bpm ${project.bpm} · ${mode} · ${pat?.name || '?'}${queued}${imported ? ' imported from suite' : ''}`;
 }
 
 function getBpm() { return clampBpm(parseInt(bpmInput.value, 10) || 120); }
 function getBeats() { return beatsFromTimeSignature(project.timeSignature); }
 function getBars() { return Math.min(4, Math.max(1, activePattern()?.bars || 1)); }
-function getTotalSteps() { return totalSteps(getBars(), getBeats()); }
+function getTotalSteps() {
+  if (project.playMode === 'song') {
+    // Song mode: the whole arrangement timeline is one long loop.
+    const bars = Math.max(1, Math.min(
+      MAX_ARRANGE_BARS,
+      arrangeSlots.length || arrangementLengthBars(project.arrangement) || 1,
+    ));
+    return totalSteps(bars, getBeats());
+  }
+  return totalSteps(getBars(), getBeats());
+}
 
 function schedulePlayhead(when, localStep) {
   const delay = Math.max(0, (when - getAudioContext().currentTime) * 1000 - 8);
   window.setTimeout(() => {
-    if (!transport.isRunning()) return;
+    if (!playbackUiActive) return;
     gridEl.querySelectorAll('.mbz-cell.is-playhead').forEach((c) => c.classList.remove('is-playhead'));
     gridEl.querySelectorAll(`.mbz-cell[data-step="${localStep}"]`).forEach((c) => c.classList.add('is-playhead'));
   }, delay);
+}
+
+/** Timeline playhead: highlight the sounding bar in song mode. */
+function scheduleArrangePlayhead(when, bar) {
+  const delay = Math.max(0, (when - getAudioContext().currentTime) * 1000 - 8);
+  window.setTimeout(() => {
+    if (!playbackUiActive || project.playMode !== 'song') return;
+    arrangeEl?.querySelectorAll('.mbz-bar.is-playhead').forEach((c) => c.classList.remove('is-playhead'));
+    arrangeEl?.querySelector(`.mbz-bar[data-bar="${bar}"]`)?.classList.add('is-playhead');
+  }, delay);
+}
+
+function clearPlayheads() {
+  gridEl.querySelectorAll('.mbz-cell.is-playhead').forEach((c) => c.classList.remove('is-playhead'));
+  arrangeEl?.querySelectorAll('.mbz-bar.is-playhead').forEach((c) => c.classList.remove('is-playhead'));
+}
+
+/** Schedule a grid playhead clear (used when the sounding pattern ≠ edit view). */
+function scheduleGridClear(when) {
+  const delay = Math.max(0, (when - getAudioContext().currentTime) * 1000 - 8);
+  window.setTimeout(() => {
+    if (!playbackUiActive) return;
+    gridEl.querySelectorAll('.mbz-cell.is-playhead').forEach((c) => c.classList.remove('is-playhead'));
+  }, delay);
+}
+
+/** Song end with loop off: let the final step sound, then park the UI. */
+function scheduleSongEnd(when) {
+  const delay = Math.max(0, (when - getAudioContext().currentTime) * 1000 + 60);
+  window.setTimeout(() => {
+    if (project.playMode !== 'song' || project.arrangeLoop !== false) return;
+    if (transport.isRunning()) return; // still looping (mode flipped mid-bar)
+    onTransportStopped();
+  }, delay);
+}
+
+function playPatternChannels(pat, idx, when) {
+  for (const ch of pat.channels) {
+    if (ch.mute) continue;
+    const anySolo = pat.channels.some((c) => c.solo);
+    if (anySolo && !ch.solo) continue;
+    const step = ch.steps[idx];
+    if (!step) continue;
+    playChannelHit(ch, when, step.velocity, chordCtx());
+  }
+}
+
+/** Song mode: the arrangement timeline owns the loop; clips pick the voice. */
+function onSongStep(stepIndex, total, when) {
+  const spb = Math.max(1, stepsPerBar(getBeats()));
+  const bar = Math.floor(stepIndex / spb);
+  scheduleArrangePlayhead(when, bar);
+  const resolved = resolveArrangementStep(project, stepIndex, arrangeSlots.length);
+  if (resolved) {
+    if (resolved.pattern.id !== songPlayingPatternId) {
+      songPlayingPatternId = resolved.pattern.id;
+      renderSession();
+    }
+    if (resolved.pattern.id === project.activePatternId) {
+      schedulePlayhead(when, resolved.localStep);
+    } else {
+      scheduleGridClear(when);
+    }
+    playPatternChannels(resolved.pattern, resolved.localStep, when);
+  } else {
+    // Empty bar = rest: keep the timeline moving, grid goes dark.
+    scheduleGridClear(when);
+  }
+  if (!project.arrangeLoop && stepIndex >= total - 1) scheduleSongEnd(when);
 }
 
 const transport = createStepTransport({
@@ -183,20 +308,33 @@ const transport = createStepTransport({
   getBeatsPerMeasure: getBeats,
   getBars,
   getTotalSteps,
+  getLoop: () => project.playMode !== 'song' || project.arrangeLoop !== false,
   getSwing: () => clamp01(project.swing),
   onStep(stepIndex, _total, when) {
     if (stepIndex === 0) loopOriginTime = when;
+    if (project.playMode === 'song') {
+      onSongStep(stepIndex, _total, when);
+      return;
+    }
+    // Live looper: consume a queued clip at the next bar boundary so the
+    // new pattern restarts cleanly on its step 0.
+    let idx = stepIndex;
+    if (queuedPatternId && stepIndex % Math.max(1, stepsPerBar(getBeats())) === 0) {
+      if (project.patterns.some((p) => p.id === queuedPatternId)
+        && queuedPatternId !== project.activePatternId) {
+        setActivePattern(queuedPatternId);
+        if (idx !== 0) {
+          transport.setStep(0);
+          idx = 0;
+        }
+      }
+      queuedPatternId = null;
+      renderSession();
+    }
     const pat = activePattern();
     if (!pat) return;
-    schedulePlayhead(when, stepIndex);
-    for (const ch of pat.channels) {
-      if (ch.mute) continue;
-      const anySolo = pat.channels.some((c) => c.solo);
-      if (anySolo && !ch.solo) continue;
-      const step = ch.steps[stepIndex];
-      if (!step) continue;
-      playChannelHit(ch, when, step.velocity, chordCtx());
-    }
+    schedulePlayhead(when, idx);
+    playPatternChannels(pat, idx, when);
   },
 });
 
@@ -223,15 +361,27 @@ function renderPads() {
     btn.className = 'mbz-pad';
     btn.dataset.pad = String(padNum);
     const ch = (entry?.midiChannel ?? DEFAULT_PAD_CHANNEL) + 1;
-    btn.innerHTML = `<b>P${padNum}</b><small>${esc(padLabel(entry))}</small><small>ch ${ch} · note ${entry?.midiNote ?? '—'} · ${esc(entry?.curve || 'linear')}</small>`;
+    btn.innerHTML = `<b>P${padNum}</b><small>${esc(launchPads ? padLaunchLabel(padNum) : padLabel(entry))}</small><small>ch ${ch} · note ${entry?.midiNote ?? '—'} · ${esc(entry?.curve || 'linear')}</small>`;
     // Pointer capture, same release path as keys (stuck-key fix covers pads too)
     btn.addEventListener('pointerdown', (e) => {
       e.preventDefault();
       try { btn.setPointerCapture(e.pointerId); } catch { /* ignore */ }
+      if (launchPads) {
+        const pat = project.patterns[padNum - 1];
+        if (pat) queuePattern(pat.id);
+        flashPad(padNum);
+        return;
+      }
       auditionPad(bank, padNum, 0.9);
     });
     padsEl.appendChild(btn);
   }
+}
+
+/** Pad button label while launch mode maps P1–P8 onto the clip bank. */
+function padLaunchLabel(padNum) {
+  const pat = project.patterns[padNum - 1];
+  return pat ? `▶ ${pat.name}` : '—';
 }
 
 function flashPad(padNum) {
@@ -429,6 +579,284 @@ function renderPatterns() {
     if (p.id === project.activePatternId) opt.selected = true;
     patternSelect.appendChild(opt);
   }
+}
+
+// ---------- session: clip launcher + arrangement timeline ----------
+
+/** Pattern the launcher highlights as sounding (song: per-bar, else edit view). */
+function playingClipId() {
+  if (project.playMode === 'song' && playbackUiActive && songPlayingPatternId) {
+    return songPlayingPatternId;
+  }
+  return project.activePatternId;
+}
+
+function syncSessionButtons() {
+  if (modeLiveBtn) {
+    const live = project.playMode !== 'song';
+    modeLiveBtn.classList.toggle('is-active', live);
+    modeSongBtn.classList.toggle('is-active', !live);
+    modeLiveBtn.setAttribute('aria-pressed', String(live));
+    modeSongBtn.setAttribute('aria-pressed', String(!live));
+  }
+  if (launchBtn) {
+    launchBtn.classList.toggle('is-active', launchPads);
+    launchBtn.setAttribute('aria-pressed', String(launchPads));
+    launchBtn.title = launchPads
+      ? 'Launch mode ON — pads P1–P8 queue clips (click to restore audition)'
+      : 'Launch mode — pads P1–P8 queue clips instead of auditioning';
+  }
+  if (launchHintEl) launchHintEl.textContent = launchPads ? ' · clips ▶' : '';
+  if (arrangeLoopEl) arrangeLoopEl.checked = project.arrangeLoop !== false;
+}
+
+/** Unified pattern switch (dropdown, clips, keys, pads). */
+function setActivePattern(patternId, opts = {}) {
+  if (!project.patterns.some((p) => p.id === patternId)) return;
+  if (!opts.keepQueue) queuedPatternId = null;
+  if (project.activePatternId !== patternId) {
+    project.activePatternId = patternId;
+    selectedCell = null;
+  }
+  arrangeSlots = arrangementToSlots(project.arrangement, Math.max(1, arrangementLengthBars(project.arrangement) || 1));
+  persist();
+  syncControlsFromProject();
+  renderPatterns();
+  renderGrid();
+  renderSession();
+  updateVelocityUi();
+  syncParamRegistry();
+  renderKnobs();
+}
+
+/**
+ * Launcher entry point: click / key 1–8 / pad.
+ * Live + running → quantized queue (next bar). Otherwise picks the edit
+ * pattern immediately (song mode has no queue — clips act like the dropdown).
+ */
+function queuePattern(patternId) {
+  if (!project.patterns.some((p) => p.id === patternId)) return;
+  ensureAudio();
+  flushPendingLoads();
+  if (project.playMode !== 'pattern' || !transport.isRunning()) {
+    setActivePattern(patternId);
+    return;
+  }
+  if (patternId === project.activePatternId) {
+    if (queuedPatternId && queuedPatternId !== patternId) {
+      queuedPatternId = null;
+      renderSession();
+    }
+    return;
+  }
+  queuedPatternId = queuedPatternId === patternId ? null : patternId; // toggle
+  renderSession();
+}
+
+function startRename(patternId) {
+  if (!project.patterns.some((p) => p.id === patternId)) return;
+  renamePatternId = patternId;
+  renderClips();
+}
+
+function commitRename(patternId, value) {
+  const wasOpen = renamePatternId !== null;
+  renamePatternId = null;
+  const p = project.patterns.find((pp) => pp.id === patternId);
+  const name = String(value ?? '').trim().slice(0, 24);
+  if (wasOpen && p && name) {
+    p.name = name;
+    persist();
+  }
+  renderPatterns();
+  renderClips();
+}
+
+function renderClips() {
+  if (!clipsEl) return;
+  clipsEl.innerHTML = '';
+  const playingId = playingClipId();
+  project.patterns.forEach((p, i) => {
+    const live = project.playMode !== 'song';
+    if (p.id === renamePatternId) {
+      const wrap = document.createElement('span');
+      wrap.className = 'mbz-clip is-editing';
+      wrap.style.setProperty('--clip', clipColor(i));
+      const input = document.createElement('input');
+      input.value = p.name;
+      input.maxLength = 24;
+      input.setAttribute('aria-label', `Rename ${p.name}`);
+      let committed = false;
+      const done = (save) => {
+        if (committed) return;
+        committed = true;
+        if (save) commitRename(p.id, input.value);
+        else { renamePatternId = null; renderClips(); }
+      };
+      input.addEventListener('keydown', (e) => {
+        e.stopPropagation();
+        if (e.key === 'Enter') done(true);
+        else if (e.key === 'Escape') done(false);
+      });
+      input.addEventListener('pointerdown', (e) => e.stopPropagation());
+      input.addEventListener('click', (e) => e.stopPropagation());
+      input.addEventListener('blur', () => done(true));
+      wrap.appendChild(input);
+      clipsEl.appendChild(wrap);
+      window.setTimeout(() => { input.focus(); input.select(); }, 0);
+      return;
+    }
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'mbz-clip';
+    btn.dataset.patternId = p.id;
+    btn.style.setProperty('--clip', clipColor(i));
+    if (p.id === playingId) btn.classList.add('is-playing');
+    if (p.id === queuedPatternId) btn.classList.add('is-queued');
+    if (p.id === project.activePatternId) btn.classList.add('is-edit');
+    const key = i < 8 ? `<kbd>${i + 1}</kbd>` : '';
+    const pad = i < 8 && launchPads && live ? `<span class="mbz-clip-pad">P${i + 1}</span>` : '';
+    const nm = document.createElement('span');
+    nm.className = 'mbz-clip-name';
+    nm.textContent = p.name;
+    btn.appendChild(nm);
+    const meta = document.createElement('small');
+    meta.innerHTML = `${esc(p.bars)}b ${key}${pad}`;
+    btn.appendChild(meta);
+    btn.title = live
+      ? `${p.name} · click queues at the next bar · key ${i + 1} · double-click renames`
+      : `${p.name} · song mode: click selects the edit pattern`;
+    btn.addEventListener('click', () => queuePattern(p.id));
+    btn.addEventListener('dblclick', () => startRename(p.id));
+    clipsEl.appendChild(btn);
+  });
+}
+
+function shortPatternLabel(name) {
+  const s = String(name || '').trim();
+  return s.length > 7 ? `${s.slice(0, 7)}…` : s;
+}
+
+function paintArrangeBar(b) {
+  if (b < 0 || b >= arrangeSlots.length) return;
+  const target = project.activePatternId;
+  arrangeSlots[b] = arrangeSlots[b] === target ? '' : target;
+  persist();
+  renderArrange();
+}
+
+function renderArrange() {
+  if (!arrangeEl) return;
+  arrangeEl.innerHTML = '';
+  const len = Math.max(1, Math.min(MAX_ARRANGE_BARS, arrangeSlots.length || 1));
+  const byId = new Map(project.patterns.map((p, i) => [p.id, { p, i }]));
+  for (let b = 0; b < len; b += 1) {
+    const id = arrangeSlots[b] || '';
+    const info = id ? byId.get(id) : null;
+    const cell = document.createElement('button');
+    cell.type = 'button';
+    cell.className = `mbz-bar${info ? ' is-filled' : ''}${id && id === project.activePatternId ? ' is-edit' : ''}`;
+    cell.dataset.bar = String(b);
+    if (info) {
+      cell.style.setProperty('--clip', clipColor(info.i));
+      cell.title = `bar ${b + 1}: ${info.p.name} · click = clear`;
+    } else {
+      cell.title = `bar ${b + 1}: rest · click = paint ${activePattern()?.name || '?'}`;
+    }
+    const num = document.createElement('span');
+    num.textContent = String(b + 1);
+    const lbl = document.createElement('b');
+    lbl.textContent = info ? shortPatternLabel(info.p.name) : '·';
+    cell.appendChild(num);
+    cell.appendChild(lbl);
+    cell.addEventListener('click', () => paintArrangeBar(b));
+    arrangeEl.appendChild(cell);
+  }
+  if (arrangeLenEl) arrangeLenEl.textContent = `${len} bar${len === 1 ? '' : 's'}`;
+  if (arrangeAddBtn) arrangeAddBtn.disabled = len >= MAX_ARRANGE_BARS;
+  if (arrangeDelBtn) arrangeDelBtn.disabled = len <= 1;
+}
+
+function renderSession() {
+  syncSessionButtons();
+  renderClips();
+  renderArrange();
+  updateProjectNote();
+}
+
+/** Shared stop path: stop button + song end with loop off. */
+function onTransportStopped() {
+  transport.stop();
+  playbackUiActive = false;
+  queuedPatternId = null;
+  songPlayingPatternId = null;
+  clearPlayheads();
+  setPlaying(false);
+  renderSession();
+}
+
+function setPlayMode(mode) {
+  const next = mode === 'song' ? 'song' : 'pattern';
+  if (project.playMode === next) return;
+  project.playMode = next;
+  queuedPatternId = null;
+  songPlayingPatternId = null;
+  arrangeSlots = arrangementToSlots(project.arrangement, Math.max(1, arrangementLengthBars(project.arrangement) || 1));
+  persist();
+  renderSession();
+  if (transport.isRunning()) {
+    // Restart so the new loop (pattern or full timeline) begins at step 0.
+    transport.stop();
+    transport.start();
+  }
+}
+
+function refreshPatternViews() {
+  persist();
+  syncControlsFromProject();
+  renderPatterns();
+  renderGrid();
+  renderSession();
+  updateVelocityUi();
+  syncParamRegistry();
+  renderKnobs();
+}
+
+function addPattern() {
+  if (project.patterns.length >= MAX_CLIP_PATTERNS) return;
+  const pat = createEmptyPattern({
+    name: `Pattern ${project.patterns.length + 1}`,
+    bars: 1,
+    timeSignature: project.timeSignature,
+  });
+  project.patterns.push(pat);
+  project.activePatternId = pat.id;
+  selectedCell = null;
+  refreshPatternViews();
+  startRename(pat.id);
+}
+
+function duplicateActivePattern() {
+  const src = activePattern();
+  if (!src || project.patterns.length >= MAX_CLIP_PATTERNS) return;
+  const copy = duplicatePattern(src, `${src.name} copy`);
+  const idx = project.patterns.findIndex((p) => p.id === src.id);
+  project.patterns.splice(idx + 1, 0, copy);
+  project.activePatternId = copy.id;
+  selectedCell = null;
+  refreshPatternViews();
+  startRename(copy.id);
+}
+
+function deleteActivePattern() {
+  if (project.patterns.length <= 1) return;
+  const id = project.activePatternId;
+  project.patterns = project.patterns.filter((p) => p.id !== id);
+  project.activePatternId = project.patterns[0].id;
+  if (queuedPatternId === id) queuedPatternId = null;
+  arrangeSlots = arrangeSlots.map((s) => (s === id ? '' : s));
+  selectedCell = null;
+  refreshPatternViews();
 }
 
 function renderKnobs() {
@@ -799,6 +1227,13 @@ function onMidiNoteOn(note, velocity, channel) {
   // Route by (channel, note) membership in the ACTIVE bank — not channel role.
   const hit = findPadByNote(padMap, bank, note, channel);
   if (hit) {
+    // Launch mode: hardware pads P1–P8 trigger the clip bank, never audition.
+    if (launchPads) {
+      const pat = project.patterns[hit.padNum - 1];
+      if (pat) queuePattern(pat.id);
+      flashPad(hit.padNum);
+      return;
+    }
     auditionPad(bank, hit.padNum, velocity);
     return;
   }
@@ -835,13 +1270,48 @@ function onMidiCC(cc, value, channel) {
     }
     setLearnSlot(null);
     renderKnobs();
+    syncStickUI();
     return;
+  }
+  // Stick Y learn: next CC binds stick Y (swallowed, not applied).
+  if (slot?.kind === 'stick-y') {
+    stickMap.yCC = cc & 0x7f;
+    if (stickMap.xCC === stickMap.yCC && stickMap.xSource === 'cc') {
+      stickMap.xCC = (stickMap.yCC + 16) & 0x7f; // keep X/Y apart
+    }
+    saveStickMap(stickMap);
+    setLearnSlot(null);
+    syncStickUI();
+    pushMidiLog(`stick Y ← cc ${stickMap.yCC}`);
+    return;
+  }
+  // Stick X-CC learn (for Editor-remapped sticks sending X as CC).
+  if (slot?.kind === 'stick-x') {
+    stickMap.xCC = cc & 0x7f;
+    stickMap.xSource = 'cc';
+    saveStickMap(stickMap);
+    setLearnSlot(null);
+    syncStickUI();
+    pushMidiLog(`stick X ← cc ${stickMap.xCC}`);
+    return;
+  }
+  const ccNum = cc & 0x7f;
+  // Stick Y (mod): handled here even with no knob bound to that CC.
+  if (ccNum === (stickMap.yCC & 0x7f)) {
+    setStickY(value / 127, 'midi');
+  }
+  // Stick X via CC (Editor-remapped sticks): bipolar around 64.
+  if ((stickMap.xSource === 'cc' || stickMap.xSource === 'auto') && ccNum === (stickMap.xCC & 0x7f)) {
+    const v = Math.min(1, Math.max(-1, (value - 64) / 63));
+    if (stickMap.xSource === 'cc' || Math.abs(value - 64) > 2) setStickX(v, 'midi');
   }
   // Channel-aware: knob with channel:null accepts any; strict knobs filter.
   const hits = knobMap.knobs.filter((k) => k.cc === (cc & 0x7f)
     && (k.channel == null || channel == null || k.channel === channel));
   if (!hits.length) {
     // Fallback: legacy index lookup during migration window
+    syncControlsFromProject();
+    syncFxStrip();
     return;
   }
   dispatchCC({
@@ -853,17 +1323,12 @@ function onMidiCC(cc, value, channel) {
   syncControlsFromProject();
   syncFxStrip();
   if (knobPopoverKnob) renderKnobPopoverValues();
-  if (cc === 1) {
-    joyY = value / 127;
-    joyDot.style.top = `${(1 - joyY) * 100}%`;
-    joyReadout.textContent = `X ${joyX.toFixed(2)} Y ${joyY.toFixed(2)}`;
-  }
 }
 
 function onMidiBend(value) {
-  joyX = Math.min(1, Math.max(-1, value));
-  joyDot.style.left = `${(joyX * 0.5 + 0.5) * 100}%`;
-  joyReadout.textContent = `X ${joyX.toFixed(2)} Y ${joyY.toFixed(2)}`;
+  pushMidiLog(`bend ${Math.round(value * 8192)}`);
+  if (stickMap.xSource === 'cc') { paintStick(); return; } // X comes from CC, ignore bend
+  setStickX(Math.min(1, Math.max(-1, value)), 'midi');
 }
 
 function updateMidiStatus(status) {
@@ -875,19 +1340,190 @@ function updateMidiStatus(status) {
   midiPill.dataset.kind = status.kind;
 }
 
+// ---------- stick engine: assignable X/Y with on-screen fallback ----------
+function applyStickXTarget(x) {
+  const t = stickMap.xTarget || 'bend';
+  if (t === 'off') return;
+  if (t === 'bend') {
+    try { setStickBendCents(x * BEND_RANGE_CENTS); } catch { /* pre-gesture */ }
+    return;
+  }
+  const desc = getParam(t);
+  if (!desc || desc.disabled) return;
+  try {
+    const n = t === 'filter' ? (x * 0.5 + 0.5) : Math.abs(x);
+    desc.set(desc.fromNorm ? desc.fromNorm(Math.min(1, Math.max(0, n))) : n);
+  } catch { /* ignore */ }
+}
+
+function applyStickYTarget(y) {
+  const t = stickMap.yTarget || 'vibrato';
+  if (t === 'off') return;
+  if (t === 'vibrato') {
+    try { setStickVibrato(y); } catch { /* pre-gesture */ }
+    return;
+  }
+  const desc = getParam(t);
+  if (!desc || desc.disabled) return;
+  try {
+    desc.set(desc.fromNorm ? desc.fromNorm(Math.min(1, Math.max(0, y))) : y);
+  } catch { /* ignore */ }
+}
+
+function paintStick() {
+  if (joyDot) {
+    joyDot.style.left = `${(joyX * 0.5 + 0.5) * 100}%`;
+    joyDot.style.top = `${(1 - joyY) * 100}%`;
+  }
+  if (joyReadout) joyReadout.textContent = `X ${joyX.toFixed(2)} Y ${joyY.toFixed(2)}`;
+  if (stickXSlider && document.activeElement !== stickXSlider) {
+    stickXSlider.value = String(Math.round(joyX * 100));
+  }
+  if (stickYSlider && document.activeElement !== stickYSlider) {
+    stickYSlider.value = String(Math.round(joyY * 127));
+  }
+}
+
+function setStickX(v, origin) {
+  joyX = Math.min(1, Math.max(-1, Number(v) || 0));
+  try { ensureAudio(); } catch { /* fallback still paints */ }
+  applyStickXTarget(joyX);
+  paintStick();
+  syncControlsFromProject();
+  syncFxStrip();
+  refreshKnobUIFromParams(knobMap, activePattern(), paintKnobArc);
+  if (origin === 'midi' && stickHint) stickHint.textContent = 'hw stick heard — targets applied.';
+}
+
+function setStickY(v, origin) {
+  joyY = Math.min(1, Math.max(0, Number(v) || 0));
+  try { ensureAudio(); } catch { /* fallback still paints */ }
+  applyStickYTarget(joyY);
+  paintStick();
+  syncControlsFromProject();
+  syncFxStrip();
+  refreshKnobUIFromParams(knobMap, activePattern(), paintKnobArc);
+  if (origin === 'midi' && stickHint) stickHint.textContent = 'hw stick heard — targets applied.';
+}
+
+function syncStickUI() {
+  if (stickXSel) {
+    stickXSel.innerHTML = STICK_X_OPTIONS
+      .map((o) => `<option value="${esc(o.id)}">${esc(o.label)}</option>`).join('');
+    stickXSel.value = stickMap.xTarget;
+  }
+  if (stickYSel) {
+    stickYSel.innerHTML = STICK_Y_OPTIONS
+      .map((o) => `<option value="${esc(o.id)}">${esc(o.label)}</option>`).join('');
+    stickYSel.value = stickMap.yTarget;
+  }
+  if (stickXSrcSel) {
+    stickXSrcSel.innerHTML = STICK_X_SOURCES
+      .map((o) => `<option value="${esc(o.id)}">${esc(o.label)}</option>`).join('');
+    stickXSrcSel.value = stickMap.xSource;
+  }
+  if (stickYccInput && document.activeElement !== stickYccInput) {
+    stickYccInput.value = String(stickMap.yCC & 0x7f);
+  }
+  if (stickSpringX) stickSpringX.checked = stickMap.springX !== false;
+  if (stickSpringY) stickSpringY.checked = stickMap.springY !== false;
+  const slot = getLearnSlot();
+  if (stickLearnBtn) {
+    stickLearnBtn.classList.toggle('is-learning', slot?.kind === 'stick-y');
+    stickLearnBtn.textContent = slot?.kind === 'stick-y' ? '…wiggle' : 'learn';
+  }
+  paintStick();
+}
+
+if (stickXSel) stickXSel.addEventListener('change', () => {
+  stickMap.xTarget = stickXSel.value;
+  saveStickMap(stickMap);
+  applyStickXTarget(joyX);
+  syncFxStrip();
+});
+if (stickYSel) stickYSel.addEventListener('change', () => {
+  stickMap.yTarget = stickYSel.value;
+  saveStickMap(stickMap);
+  applyStickYTarget(joyY);
+  syncFxStrip();
+});
+if (stickXSrcSel) stickXSrcSel.addEventListener('change', () => {
+  stickMap.xSource = stickXSrcSel.value;
+  saveStickMap(stickMap);
+  syncStickUI();
+});
+if (stickYccInput) stickYccInput.addEventListener('change', () => {
+  stickMap.yCC = Math.min(127, Math.max(0, parseInt(stickYccInput.value, 10) || 0));
+  saveStickMap(stickMap);
+  syncStickUI();
+});
+if (stickLearnBtn) stickLearnBtn.addEventListener('click', () => {
+  const slot = getLearnSlot();
+  setLearnSlot(slot?.kind === 'stick-y' ? null : { kind: 'stick-y' });
+  syncStickUI();
+  renderKnobs();
+});
+if (stickSpringX) stickSpringX.addEventListener('change', () => {
+  stickMap.springX = !!stickSpringX.checked;
+  saveStickMap(stickMap);
+});
+if (stickSpringY) stickSpringY.addEventListener('change', () => {
+  stickMap.springY = !!stickSpringY.checked;
+  saveStickMap(stickMap);
+});
+if (stickXSlider) stickXSlider.addEventListener('input', () => {
+  setStickX((parseInt(stickXSlider.value, 10) || 0) / 100, 'screen');
+});
+if (stickYSlider) stickYSlider.addEventListener('input', () => {
+  setStickY((parseInt(stickYSlider.value, 10) || 0) / 127, 'screen');
+});
+if (stickXSlider) stickXSlider.addEventListener('change', () => {
+  if (stickMap.springX !== false) setStickX(0, 'screen');
+});
+if (stickYSlider) stickYSlider.addEventListener('change', () => {
+  if (stickMap.springY !== false) setStickY(0, 'screen');
+});
+if (joyBox) {
+  let dragging = false;
+  const stickFromEvent = (e) => {
+    const r = joyBox.getBoundingClientRect();
+    const nx = Math.min(1, Math.max(-1, ((e.clientX - r.left) / Math.max(1, r.width)) * 2 - 1));
+    const ny = Math.min(1, Math.max(0, 1 - (e.clientY - r.top) / Math.max(1, r.height)));
+    setStickX(nx, 'screen');
+    setStickY(ny, 'screen');
+  };
+  joyBox.addEventListener('pointerdown', (e) => {
+    dragging = true;
+    try { joyBox.setPointerCapture(e.pointerId); } catch { /* ignore */ }
+    stickFromEvent(e);
+  });
+  joyBox.addEventListener('pointermove', (e) => { if (dragging) stickFromEvent(e); });
+  const endDrag = () => {
+    if (!dragging) return;
+    dragging = false;
+    if (stickMap.springX !== false) setStickX(0, 'screen');
+    if (stickMap.springY !== false) setStickY(0, 'screen');
+    paintStick();
+  };
+  joyBox.addEventListener('pointerup', endDrag);
+  joyBox.addEventListener('pointercancel', endDrag);
+}
+
 playBtn.addEventListener('click', () => {
   ensureAudio();
   // First guaranteed gesture: build the FX chain now so the first knob
   // sweep has no mid-play master-bus rewire hiccup.
   try { getFxChain(); } catch { /* offline */ }
   flushPendingLoads();
-  transport.start();
+  if (!transport.start()) return;
+  playbackUiActive = true;
+  songPlayingPatternId = null;
+  if (project.playMode === 'song') clearPlayheads();
   setPlaying(true);
+  renderSession();
 });
 stopBtn.addEventListener('click', () => {
-  transport.stop();
-  gridEl.querySelectorAll('.mbz-cell.is-playhead').forEach((c) => c.classList.remove('is-playhead'));
-  setPlaying(false);
+  onTransportStopped();
 });
 bpmInput.addEventListener('change', () => {
   try { getParam('bpm')?.set(getBpm()); } catch { project.bpm = getBpm(); persist(); }
@@ -920,14 +1556,38 @@ barsSelect.addEventListener('change', () => {
   renderGrid();
 });
 patternSelect.addEventListener('change', () => {
-  project.activePatternId = patternSelect.value;
-  arrangeSlots = arrangementToSlots(project.arrangement, Math.max(1, arrangementLengthBars(project.arrangement) || 1));
-  persist();
-  renderGrid();
-  renderPatterns();
-  syncParamRegistry();
-  renderKnobs();
+  setActivePattern(patternSelect.value);
 });
+
+/** Session controls: mode, launch pads, timeline length, pattern bank. */
+modeLiveBtn?.addEventListener('click', () => setPlayMode('pattern'));
+modeSongBtn?.addEventListener('click', () => setPlayMode('song'));
+launchBtn?.addEventListener('click', () => {
+  launchPads = !launchPads;
+  renderSession();
+  renderPads();
+});
+arrangeLoopEl?.addEventListener('change', () => {
+  project.arrangeLoop = arrangeLoopEl.checked !== false;
+  persist();
+  renderSession();
+});
+arrangeAddBtn?.addEventListener('click', () => {
+  if (arrangeSlots.length >= MAX_ARRANGE_BARS) return;
+  arrangeSlots.push('');
+  persist();
+  renderArrange();
+});
+arrangeDelBtn?.addEventListener('click', () => {
+  if (arrangeSlots.length <= 1) return;
+  arrangeSlots.pop();
+  persist();
+  renderArrange();
+});
+patternNewBtn?.addEventListener('click', addPattern);
+patternDupBtn?.addEventListener('click', duplicateActivePattern);
+patternRenBtn?.addEventListener('click', () => startRename(project.activePatternId));
+patternDelBtn?.addEventListener('click', deleteActivePattern);
 
 /** FX strip: sliders are views on the same params knobs write to. */
 function syncFxStrip() {
@@ -1044,15 +1704,22 @@ document.querySelector('[data-grid-clear]').addEventListener('click', () => {
 });
 document.querySelector('[data-grid-reset]').addEventListener('click', () => {
   project = resetMbzProject();
+  queuedPatternId = null;
+  songPlayingPatternId = null;
+  renamePatternId = null;
+  launchPads = false;
   arrangeSlots = arrangementToSlots(project.arrangement, 1);
   persist();
   syncControlsFromProject();
   renderPatterns();
   renderGrid();
+  renderSession();
+  renderPads();
 });
 keysCurveSel.addEventListener('change', () => { keysCurve = keysCurveSel.value; });
 
 // Computer keyboard: A = C at visible base (ported from suite dock map).
+// Digits 1–8 queue clips from the pattern bank (no clash with A–\ note keys).
 function isTypingTarget(target) {
   if (!target || !(target instanceof Element)) return false;
   const tag = target.tagName;
@@ -1062,6 +1729,13 @@ function isTypingTarget(target) {
 window.addEventListener('keydown', (e) => {
   if (e.repeat || e.metaKey || e.ctrlKey || e.altKey) return;
   if (isTypingTarget(e.target)) return;
+  const digit = /^Digit([1-8])$/.exec(e.code);
+  if (digit) {
+    e.preventDefault();
+    const pat = project.patterns[Number(digit[1]) - 1];
+    if (pat) queuePattern(pat.id);
+    return;
+  }
   const offset = PC_NOTE_OFFSETS[e.code];
   if (offset == null) return;
   e.preventDefault();
@@ -1152,6 +1826,7 @@ if (fwBtn) {
 syncControlsFromProject();
 renderPatterns();
 renderGrid();
+renderSession();
 renderKeyboard();
 renderPads();
 // Approach B boot: static params first, then dynamics, then knobs.
@@ -1167,6 +1842,7 @@ syncFxStrip();
 syncDelayToBpm(project.bpm);
 renderKnobs();
 renderPadEditors();
+syncStickUI();
 updateVelocityUi();
 proveAssets();
 // Grand preload is gesture-gated (autoplay policy) — preloadDefaults marks

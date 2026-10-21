@@ -8,11 +8,17 @@ const SCHEDULE_AHEAD_SEC = 0.25;
  * 16th-note step transport with swing.
  * Prefer getTotalSteps for Song mode; otherwise bars × beats × 16ths.
  *
+ * setStep(n): reseat the loop counter — used to restart at step 0 when a
+ * queued clip takes over at a bar boundary. Safe to call from onStep.
+ * getLoop(): when it returns false, scheduling stops after the last step
+ * (song end with loop off); audio already scheduled keeps playing out.
+ *
  * @param {{
  *   getBpm: () => number,
  *   getBeatsPerMeasure: () => number,
  *   getBars?: () => number,
  *   getTotalSteps?: () => number,
+ *   getLoop?: () => boolean,
  *   getSwing: () => number,
  *   onStep: (stepIndex: number, totalSteps: number, when: number) => void,
  * }} opts
@@ -22,6 +28,7 @@ export function createStepTransport({
   getBeatsPerMeasure,
   getBars,
   getTotalSteps,
+  getLoop,
   getSwing,
   onStep,
 }) {
@@ -65,8 +72,11 @@ export function createStepTransport({
       return;
     }
 
-    const total = Math.max(1, totalStepCount());
     while (nextNoteTime < ctx.currentTime + SCHEDULE_AHEAD_SEC) {
+      // Re-read each pass: the loop length can change mid-batch when a
+      // queued clip takes over (pattern change) or the mode flips.
+      const total = Math.max(1, totalStepCount());
+      const loop = typeof getLoop === 'function' ? getLoop() !== false : true;
       currentStep = (currentStep + 1) % total;
       const when = nextNoteTime + swingOffset(currentStep, sps);
       try {
@@ -75,6 +85,16 @@ export function createStepTransport({
         console.error(err);
       }
       nextNoteTime += sps;
+      if (!loop && currentStep >= total - 1) {
+        // Song end with loop off: schedule nothing further. Notes already
+        // handed to onStep play out; the caller repaints UI at the end.
+        running = false;
+        if (timerId != null) {
+          clearTimeout(timerId);
+          timerId = null;
+        }
+        break;
+      }
     }
   }
 
@@ -97,6 +117,14 @@ export function createStepTransport({
   return {
     isRunning() {
       return running;
+    },
+
+    /** Reseat the loop counter (see header). Clamped, never throws. */
+    setStep(n) {
+      const total = Math.max(1, totalStepCount());
+      const v = Number(n);
+      if (!Number.isFinite(v)) return;
+      currentStep = ((Math.floor(v) % total) + total) % total;
     },
 
     start() {
