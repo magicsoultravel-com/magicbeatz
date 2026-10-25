@@ -7,20 +7,22 @@ import {
   clampBpm, clamp01, beatsFromTimeSignature, totalSteps,
   stepsPerBar, createEmptyPattern,
   DEFAULT_VELOCITY, INSTRUMENT_OPTIONS,
+  createChannel, defaultInstrumentForType, instrumentOptionsForType,
+  resizePatternSteps, serializeChannel,
 } from '../sequencer/pattern.js';
 import {
-  getActivePattern, arrangementToSlots, slotsToArrangement,
-  arrangementLengthBars, resolveArrangementStep, duplicatePattern,
-  MAX_ARRANGE_BARS,
+  getActivePattern, arrangementToSlots, slotsToArrangement, resampleSlots,
+  arrangementLengthSlots, resolveArrangementStep, duplicatePattern,
+  MAX_ARRANGE_BARS, MAX_ARRANGE_SLOTS, normalizeArrangeDiv,
 } from '../sequencer/project.js';
 import { createStepTransport } from '../sequencer/transport.js';
 import { playChannelHit } from '../audio/banks.js';
-import { playPercussionVoice } from '../audio/percussion.js';
+import { playPercussionVoice, PERCUSSION_BANK } from '../audio/percussion.js';
 import {
   playPitchedInstrument, playPitchedChord, startPitchedSustain, stopPitchedSustain,
   SUSTAIN_INSTRUMENTS, setStickBendCents, setStickVibrato,
 } from '../audio/voices.js';
-import { chordEntriesFor } from '../theory/chords.js';
+import { chordEntriesFor, chordNameOptions } from '../theory/chords.js';
 import { loadMbzProject, saveMbzProject, resetMbzProject } from '../state/store.js';
 import {
   loadPadMap, savePadMap, applyCurve, PAD_ORDER, getLearnSlot, setLearnSlot,
@@ -81,6 +83,7 @@ let songPlayingPatternId = null; // pattern sounding under the current song bar
 let launchPads = false; // pads P1–P8 queue clips instead of auditioning
 let playbackUiActive = false; // playhead guard (transport may self-stop at song end)
 let renamePatternId = null; // pattern with an open inline rename editor
+let trackPopoverId = null; // channel id with an open track editor
 const CLIP_COLORS = ['#ff5d5d', '#ffb84d', '#57e6a8', '#6aa8ff', '#c07bff', '#ff8ad8', '#4de1e8', '#9ae66e'];
 const MAX_CLIP_PATTERNS = 16;
 function clipColor(i) { return CLIP_COLORS[i % CLIP_COLORS.length]; }
@@ -118,7 +121,6 @@ const swingInput = $('[data-swing]');
 const swingVal = $('[data-swing-val]');
 const sigSelect = $('[data-sig]');
 const barsSelect = $('[data-bars]');
-const patternSelect = $('[data-pattern]');
 const projectNote = $('[data-project-note]');
 const padsEl = $('[data-pads]');
 const gridEl = $('[data-grid]');
@@ -146,6 +148,13 @@ const arrangeLenEl = $('[data-arrange-len]');
 const arrangeLoopEl = $('[data-arrange-loop]');
 const arrangeAddBtn = $('[data-arrange-add]');
 const arrangeDelBtn = $('[data-arrange-del]');
+const arrangeClearBtn = $('[data-arrange-clear]');
+const arrangeDivSel = $('[data-arrange-div]');
+const arrangeRulerEl = $('[data-arrange-ruler]');
+const gridTitleEl = $('[data-grid-title]');
+const gridPanelEl = $('.mbz-grid-panel');
+const trackAddBtn = $('[data-track-add]');
+const trackAddMenu = $('[data-track-add-menu]');
 const patternNewBtn = $('[data-pattern-new]');
 const patternDupBtn = $('[data-pattern-dup]');
 const patternRenBtn = $('[data-pattern-ren]');
@@ -192,12 +201,25 @@ async function proveAssets() {
 }
 
 function activePattern() { return getActivePattern(project); }
-let arrangeSlots = arrangementToSlots(
-  project.arrangement,
-  Math.max(1, arrangementLengthBars(project.arrangement) || 1),
-);
+
+// ---------- arrangement slots (resolution-aware) ----------
+function arrDiv() { return normalizeArrangeDiv(project.arrangeDiv); }
+function slotSteps() { return Math.max(1, Math.round(stepsPerBar(getBeats()) / arrDiv())); }
+function patternStepCount(pat) { return totalSteps(pat?.bars || 1, getBeats()); }
+function arrangeBarCount() {
+  const d = arrDiv();
+  return Math.max(1, Math.ceil(arrangementLengthSlots(project.arrangement, d) / d));
+}
+function slotsFromProject() {
+  const d = arrDiv();
+  return arrangementToSlots(project.arrangement, arrangeBarCount() * d, d);
+}
+let arrangeSlots = slotsFromProject();
+function reloadArrangeSlots() { arrangeSlots = slotsFromProject(); }
+
 function persist() {
-  project.arrangement = slotsToArrangement(arrangeSlots);
+  project.arrangeDiv = arrDiv();
+  project.arrangement = slotsToArrangement(arrangeSlots, project.arrangeDiv);
   saveMbzProject(project);
   updateProjectNote();
 }
@@ -207,7 +229,7 @@ function updateProjectNote() {
   const queued = queuedPatternId
     ? ` → ${project.patterns.find((p) => p.id === queuedPatternId)?.name || '?'}`
     : '';
-  projectNote.textContent = `project: magicbeatz-v1 bpm ${project.bpm} · ${mode} · ${pat?.name || '?'}${queued}${imported ? ' imported from suite' : ''}`;
+  projectNote.textContent = `project: magicbeatz-v3 bpm ${project.bpm} · ${mode} · ${pat?.name || '?'}${queued}${imported ? ' imported from suite' : ''}`;
 }
 
 function getBpm() { return clampBpm(parseInt(bpmInput.value, 10) || 120); }
@@ -216,13 +238,9 @@ function getBars() { return Math.min(4, Math.max(1, activePattern()?.bars || 1))
 function getTotalSteps() {
   if (project.playMode === 'song') {
     // Song mode: the whole arrangement timeline is one long loop.
-    const bars = Math.max(1, Math.min(
-      MAX_ARRANGE_BARS,
-      arrangeSlots.length || arrangementLengthBars(project.arrangement) || 1,
-    ));
-    return totalSteps(bars, getBeats());
+    return Math.max(1, Math.min(MAX_ARRANGE_SLOTS, arrangeSlots.length || 1)) * slotSteps();
   }
-  return totalSteps(getBars(), getBeats());
+  return patternStepCount(activePattern());
 }
 
 function schedulePlayhead(when, localStep) {
@@ -234,19 +252,19 @@ function schedulePlayhead(when, localStep) {
   }, delay);
 }
 
-/** Timeline playhead: highlight the sounding bar in song mode. */
-function scheduleArrangePlayhead(when, bar) {
+/** Timeline playhead: highlight the sounding arrangement slot in song mode. */
+function scheduleArrangePlayhead(when, slotIndex) {
   const delay = Math.max(0, (when - getAudioContext().currentTime) * 1000 - 8);
   window.setTimeout(() => {
     if (!playbackUiActive || project.playMode !== 'song') return;
-    arrangeEl?.querySelectorAll('.mbz-bar.is-playhead').forEach((c) => c.classList.remove('is-playhead'));
-    arrangeEl?.querySelector(`.mbz-bar[data-bar="${bar}"]`)?.classList.add('is-playhead');
+    arrangeEl?.querySelectorAll('.mbz-slot.is-playhead').forEach((c) => c.classList.remove('is-playhead'));
+    arrangeEl?.querySelector(`.mbz-slot[data-slot="${slotIndex}"]`)?.classList.add('is-playhead');
   }, delay);
 }
 
 function clearPlayheads() {
   gridEl.querySelectorAll('.mbz-cell.is-playhead').forEach((c) => c.classList.remove('is-playhead'));
-  arrangeEl?.querySelectorAll('.mbz-bar.is-playhead').forEach((c) => c.classList.remove('is-playhead'));
+  arrangeEl?.querySelectorAll('.mbz-slot.is-playhead').forEach((c) => c.classList.remove('is-playhead'));
 }
 
 /** Schedule a grid playhead clear (used when the sounding pattern ≠ edit view). */
@@ -281,10 +299,9 @@ function playPatternChannels(pat, idx, when) {
 
 /** Song mode: the arrangement timeline owns the loop; clips pick the voice. */
 function onSongStep(stepIndex, total, when) {
-  const spb = Math.max(1, stepsPerBar(getBeats()));
-  const bar = Math.floor(stepIndex / spb);
-  scheduleArrangePlayhead(when, bar);
   const resolved = resolveArrangementStep(project, stepIndex, arrangeSlots.length);
+  const slotIndex = resolved ? resolved.slotIndex : Math.floor(stepIndex / slotSteps());
+  scheduleArrangePlayhead(when, slotIndex);
   if (resolved) {
     if (resolved.pattern.id !== songPlayingPatternId) {
       songPlayingPatternId = resolved.pattern.id;
@@ -509,26 +526,92 @@ function findChannel(id) {
   return activePattern()?.channels.find((c) => c.id === id) || null;
 }
 
+function trackName(ch) {
+  return ch.name || ch.voiceId || ch.instrumentId || ch.type || 'track';
+}
+
 function renderGrid() {
   const pat = activePattern();
   gridEl.innerHTML = '';
+  // The track editor lives outside the scrolling grid, so it must be cleared
+  // explicitly whenever the grid re-renders.
+  gridPanelEl?.querySelectorAll('.mbz-track-pop').forEach((el) => el.remove());
   if (!pat) return;
-  const n = getTotalSteps();
+  const n = patternStepCount(pat);
   gridEl.style.setProperty('--steps', String(n));
-  for (const ch of pat.channels) {
+  if (gridTitleEl) {
+    gridTitleEl.textContent = `${pat.name} · ${pat.bars}b · ${pat.channels.length} track${pat.channels.length === 1 ? '' : 's'}`;
+  }
+  let popoverAnchor = null;
+  let popoverIndex = -1;
+  pat.channels.forEach((ch, chIndex) => {
+    if (ch.steps.length !== n) {
+      ch.steps = Array.from({ length: n }, (_, k) => ch.steps[k] || null);
+    }
     const row = document.createElement('div');
     row.className = 'mbz-ch-row';
     row.style.setProperty('--steps', String(n));
-    const name = document.createElement('span');
+
+    const head = document.createElement('div');
+    head.className = 'mbz-ch-head';
+
+    const name = document.createElement('button');
+    name.type = 'button';
     name.className = 'mbz-ch-name';
-    name.textContent = ch.name || ch.voiceId || ch.type;
-    row.appendChild(name);
-    ch.steps.forEach((step, i) => {
+    name.textContent = trackName(ch);
+    name.title = `${trackName(ch)} · click to edit this track`;
+    name.setAttribute('aria-expanded', String(trackPopoverId === ch.id));
+    name.addEventListener('click', () => {
+      trackPopoverId = trackPopoverId === ch.id ? null : ch.id;
+      renderGrid();
+    });
+    head.appendChild(name);
+
+    const mute = document.createElement('button');
+    mute.type = 'button';
+    mute.className = `mbz-ch-flag${ch.mute ? ' is-on' : ''}`;
+    mute.textContent = 'M';
+    mute.title = ch.mute ? 'muted — click to unmute' : 'mute this track';
+    mute.setAttribute('aria-pressed', String(!!ch.mute));
+    mute.addEventListener('click', (e) => {
+      e.stopPropagation();
+      ch.mute = !ch.mute;
+      mute.classList.toggle('is-on', !!ch.mute);
+      mute.setAttribute('aria-pressed', String(!!ch.mute));
+      mute.title = ch.mute ? 'muted — click to unmute' : 'mute this track';
+      persist();
+    });
+    head.appendChild(mute);
+
+    const solo = document.createElement('button');
+    solo.type = 'button';
+    solo.className = `mbz-ch-flag is-solo${ch.solo ? ' is-on' : ''}`;
+    solo.textContent = 'S';
+    solo.title = ch.solo ? 'soloed — click to unsolo' : 'solo this track';
+    solo.setAttribute('aria-pressed', String(!!ch.solo));
+    solo.addEventListener('click', (e) => {
+      e.stopPropagation();
+      ch.solo = !ch.solo;
+      solo.classList.toggle('is-on', !!ch.solo);
+      solo.setAttribute('aria-pressed', String(!!ch.solo));
+      solo.title = ch.solo ? 'soloed — click to unsolo' : 'solo this track';
+      persist();
+    });
+    head.appendChild(solo);
+
+    if (trackPopoverId === ch.id) {
+      popoverAnchor = name;
+      popoverIndex = chIndex;
+    }
+
+    row.appendChild(head);
+    for (let i = 0; i < n; i += 1) {
+      const step = ch.steps[i];
       const cell = document.createElement('button');
       cell.type = 'button';
       cell.className = `mbz-cell${step ? ' is-on' : ''}${selectedCell?.channelId === ch.id && selectedCell?.stepIndex === i ? ' is-playhead' : ''}`;
       cell.dataset.step = String(i);
-      cell.title = `${ch.name || ch.voiceId} step ${i + 1}`;
+      cell.title = `${trackName(ch)} step ${i + 1}`;
       cell.addEventListener('click', () => {
         const idx = i;
         if (ch.steps[idx]) {
@@ -547,9 +630,211 @@ function renderGrid() {
         updateVelocityUi();
       });
       row.appendChild(cell);
-    });
+    }
     gridEl.appendChild(row);
+  });
+  if (popoverAnchor && popoverIndex >= 0) {
+    positionTrackPopover(renderTrackPopover(pat.channels[popoverIndex], popoverIndex), popoverAnchor);
   }
+}
+
+/** Mount the track editor outside the scrolling grid so it never gets clipped. */
+function positionTrackPopover(pop, anchor) {
+  const rect = anchor.getBoundingClientRect();
+  if (!gridPanelEl) {
+    pop.style.position = 'fixed';
+    pop.style.top = `${rect.bottom + 4}px`;
+    pop.style.left = `${Math.max(8, rect.left)}px`;
+    document.body.appendChild(pop);
+    return;
+  }
+  const host = gridPanelEl.getBoundingClientRect();
+  pop.style.top = `${Math.max(0, rect.bottom - host.top + 4)}px`;
+  pop.style.left = `${Math.max(0, Math.min(rect.left - host.left, host.width - 244))}px`;
+  gridPanelEl.appendChild(pop);
+}
+
+/** Inline track editor, anchored under the row name. */
+function renderTrackPopover(ch, index) {
+  const pop = document.createElement('div');
+  pop.className = 'mbz-track-pop';
+  const typeOpts = [['percussion', 'drum'], ['note', 'instrument'], ['chord', 'chord']]
+    .map(([v, l]) => `<option value="${v}"${ch.type === v ? ' selected' : ''}>${l}</option>`).join('');
+  const voiceOpts = (PERCUSSION_BANK?.voices || [])
+    .map((v) => `<option value="${esc(v.id)}"${v.id === ch.voiceId ? ' selected' : ''}>${esc(v.label)}</option>`).join('');
+  const instOpts = instrumentOptionsForType(ch.type)
+    .map((o) => `<option value="${esc(o.id)}"${o.id === ch.instrumentId ? ' selected' : ''}>${esc(o.label)}</option>`).join('');
+  const pitchOpts = PITCH_LABELS
+    .map((p) => `<option value="${esc(p)}"${p === ch.pitch ? ' selected' : ''}>${esc(p)}</option>`).join('');
+  const chordOpts = chordNameOptions(theory.chordsJson, theory.chordsTheory)
+    .map((c) => `<option value="${esc(c)}"${c === (ch.chordName || ch.voiceId) ? ' selected' : ''}>${esc(c)}</option>`).join('');
+  const scaleOpts = Object.keys(theory.scalesJson || {})
+    .map((s) => `<option value="${esc(s)}"${s === ch.scaleKey ? ' selected' : ''}>${esc(s)}</option>`).join('');
+
+  const voiceField = ch.type === 'percussion'
+    ? `<label>drum voice<select data-t="voice">${voiceOpts}</select></label>`
+    : `<label>instrument<select data-t="inst">${instOpts}</select></label>`;
+
+  const noteFields = ch.type === 'note'
+    ? `<div class="mbz-track-pop-grid">
+        <label>pitch<select data-t="pitch">${pitchOpts}</select></label>
+        <label>octave<input data-t="oct" type="number" min="0" max="8" value="${ch.octave ?? 4}"></label>
+      </div>`
+    : '';
+
+  const chordFields = ch.type === 'chord'
+    ? `<div class="mbz-track-pop-grid">
+        <label>mode<select data-t="chordMode">
+          <option value="named"${ch.chordMode !== 'degree' ? ' selected' : ''}>named</option>
+          <option value="degree"${ch.chordMode === 'degree' ? ' selected' : ''}>degree</option>
+        </select></label>
+        ${ch.chordMode === 'degree'
+          ? `<label>degree<input data-t="degree" type="number" min="0" max="6" value="${ch.degree ?? 0}"></label>`
+          : `<label>chord<select data-t="chordName">${chordOpts}</select></label>`}
+      </div>
+      ${ch.chordMode === 'degree' ? `<label>scale<select data-t="scaleKey">${scaleOpts}</select></label>` : ''}`
+    : '';
+
+  pop.innerHTML = `<h4>${esc(trackName(ch))}<span>row ${index + 1} · ${esc(ch.type)}</span></h4>
+    <label>name<input data-t="name" type="text" maxlength="18" value="${esc(ch.name || '')}" placeholder="${esc(trackName(ch))}"></label>
+    <label>type<select data-t="type">${typeOpts}</select></label>
+    ${voiceField}
+    ${noteFields}
+    ${chordFields}
+    <label>gain <input data-t="gain" type="range" min="0" max="100" value="${Math.round(clamp01(ch.gain ?? 0.8) * 100)}"></label>
+    <div class="mbz-track-pop-row">
+      <button type="button" class="mbz-btn" data-t="up"${index === 0 ? ' disabled' : ''} title="Move track up">↑</button>
+      <button type="button" class="mbz-btn" data-t="down"${index >= activePattern().channels.length - 1 ? ' disabled' : ''} title="Move track down">↓</button>
+      <button type="button" class="mbz-btn" data-t="dup" title="Duplicate track">dup</button>
+      <button type="button" class="mbz-btn" data-t="del"${activePattern().channels.length <= 1 ? ' disabled' : ''} title="Delete track">del</button>
+    </div>`;
+
+  const q = (sel) => pop.querySelector(sel);
+  const commit = () => { persist(); refreshPatternViews(); };
+
+  q('[data-t="name"]').addEventListener('change', (e) => {
+    ch.name = String(e.target.value || '').trim().slice(0, 18);
+    commit();
+  });
+  q('[data-t="type"]').addEventListener('change', (e) => {
+    const next = e.target.value;
+    ch.type = next === 'chord' || next === 'note' ? next : 'percussion';
+    ch.bankId = ch.type === 'percussion' ? 'percussion' : ch.type;
+    if (ch.type === 'percussion') {
+      ch.instrumentId = '';
+      ch.voiceId = ch.voiceId || PERCUSSION_BANK?.voices?.[0]?.id || 'kick';
+    } else {
+      ch.voiceId = '';
+      ch.instrumentId = ch.instrumentId || defaultInstrumentForType(ch.type);
+    }
+    commit();
+  });
+  q('[data-t="voice"]')?.addEventListener('change', (e) => {
+    ch.voiceId = e.target.value;
+    persist();
+  });
+  q('[data-t="inst"]')?.addEventListener('change', (e) => {
+    ch.instrumentId = e.target.value;
+    const resolved = resolveInstrument(ch.instrumentId);
+    if (resolved.engine === 'sample' && !isSampleReady(resolved.id)) {
+      ensureSample(resolved.id).then(renderKeysInstrumentOptions);
+    }
+    persist();
+  });
+  q('[data-t="pitch"]')?.addEventListener('change', (e) => { ch.pitch = e.target.value; persist(); });
+  q('[data-t="oct"]')?.addEventListener('change', (e) => {
+    ch.octave = Math.min(8, Math.max(0, parseInt(e.target.value, 10) || 0));
+    persist();
+  });
+  q('[data-t="chordMode"]')?.addEventListener('change', (e) => {
+    ch.chordMode = e.target.value === 'degree' ? 'degree' : 'named';
+    commit();
+  });
+  q('[data-t="chordName"]')?.addEventListener('change', (e) => { ch.chordName = e.target.value; persist(); });
+  q('[data-t="scaleKey"]')?.addEventListener('change', (e) => { ch.scaleKey = e.target.value; persist(); });
+  q('[data-t="degree"]')?.addEventListener('change', (e) => {
+    ch.degree = Math.min(6, Math.max(0, parseInt(e.target.value, 10) || 0));
+    persist();
+  });
+  q('[data-t="gain"]').addEventListener('input', (e) => {
+    ch.gain = clamp01(parseInt(e.target.value, 10) / 100);
+    persist();
+    refreshKnobUIFromParams(knobMap, activePattern, paintKnobArc);
+  });
+  q('[data-t="up"]').addEventListener('click', () => moveTrack(ch.id, -1));
+  q('[data-t="down"]').addEventListener('click', () => moveTrack(ch.id, 1));
+  q('[data-t="dup"]').addEventListener('click', () => duplicateTrack(ch.id));
+  q('[data-t="del"]').addEventListener('click', () => deleteTrack(ch.id));
+
+  return pop;
+}
+
+/** Append a track to the active clip and open its editor. */
+function addTrack(kind = 'note') {
+  const pat = activePattern();
+  if (!pat) return;
+  const type = kind === 'percussion' || kind === 'chord' ? kind : 'note';
+  const ch = createChannel({
+    type,
+    name: uniqueTrackName(pat, type),
+    instrumentId: type === 'percussion' ? '' : defaultInstrumentForType(type),
+    voiceId: type === 'percussion' ? PERCUSSION_BANK?.voices?.[0]?.id || 'kick' : '',
+    steps: Array.from({ length: patternStepCount(pat) }, () => null),
+  });
+  pat.channels.push(ch);
+  selectedCell = null;
+  trackPopoverId = ch.id;
+  refreshPatternViews();
+}
+
+function uniqueTrackName(pat, type) {
+  const base = type === 'percussion' ? 'drum' : type === 'chord' ? 'chords' : 'instrument';
+  const taken = new Set(pat.channels.map((c) => c.name));
+  if (!taken.has(base)) return base;
+  let n = 2;
+  while (taken.has(`${base} ${n}`)) n += 1;
+  return `${base} ${n}`;
+}
+
+function moveTrack(channelId, delta) {
+  const pat = activePattern();
+  if (!pat) return;
+  const idx = pat.channels.findIndex((c) => c.id === channelId);
+  const next = idx + delta;
+  if (idx < 0 || next < 0 || next >= pat.channels.length) return;
+  const [ch] = pat.channels.splice(idx, 1);
+  pat.channels.splice(next, 0, ch);
+  persist();
+  syncParamRegistry();
+  renderKnobs();
+  renderGrid();
+}
+
+function duplicateTrack(channelId) {
+  const pat = activePattern();
+  if (!pat) return;
+  const idx = pat.channels.findIndex((c) => c.id === channelId);
+  if (idx < 0) return;
+  const src = pat.channels[idx];
+  const copy = createChannel({
+    ...serializeChannel(src),
+    id: undefined,
+    name: `${trackName(src)} copy`,
+  });
+  pat.channels.splice(idx + 1, 0, copy);
+  trackPopoverId = copy.id;
+  refreshPatternViews();
+}
+
+function deleteTrack(channelId) {
+  const pat = activePattern();
+  if (!pat || pat.channels.length <= 1) return;
+  const idx = pat.channels.findIndex((c) => c.id === channelId);
+  if (idx < 0) return;
+  pat.channels.splice(idx, 1);
+  if (selectedCell?.channelId === channelId) selectedCell = null;
+  trackPopoverId = null;
+  refreshPatternViews();
 }
 
 function updateVelocityUi() {
@@ -568,17 +853,6 @@ function updateVelocityUi() {
   velInput.disabled = false;
   velInput.value = String(Math.round(step.velocity * 100));
   velVal.textContent = `${Math.round(step.velocity * 100)}%`;
-}
-
-function renderPatterns() {
-  patternSelect.innerHTML = '';
-  for (const p of project.patterns) {
-    const opt = document.createElement('option');
-    opt.value = p.id;
-    opt.textContent = p.name;
-    if (p.id === project.activePatternId) opt.selected = true;
-    patternSelect.appendChild(opt);
-  }
 }
 
 // ---------- session: clip launcher + arrangement timeline ----------
@@ -608,6 +882,7 @@ function syncSessionButtons() {
   }
   if (launchHintEl) launchHintEl.textContent = launchPads ? ' · clips ▶' : '';
   if (arrangeLoopEl) arrangeLoopEl.checked = project.arrangeLoop !== false;
+  if (arrangeDivSel) arrangeDivSel.value = String(arrDiv());
 }
 
 /** Unified pattern switch (dropdown, clips, keys, pads). */
@@ -618,10 +893,9 @@ function setActivePattern(patternId, opts = {}) {
     project.activePatternId = patternId;
     selectedCell = null;
   }
-  arrangeSlots = arrangementToSlots(project.arrangement, Math.max(1, arrangementLengthBars(project.arrangement) || 1));
+  arrangeSlots = slotsFromProject();
   persist();
   syncControlsFromProject();
-  renderPatterns();
   renderGrid();
   renderSession();
   updateVelocityUi();
@@ -668,7 +942,6 @@ function commitRename(patternId, value) {
     p.name = name;
     persist();
   }
-  renderPatterns();
   renderClips();
 }
 
@@ -723,6 +996,15 @@ function renderClips() {
     const meta = document.createElement('small');
     meta.innerHTML = `${esc(p.bars)}b ${key}${pad}`;
     btn.appendChild(meta);
+    const badge = p.id === queuedPatternId
+      ? '⏳'
+      : (playbackUiActive && transport.isRunning() && p.id === playingId ? '▶' : '');
+    if (badge) {
+      const badgeEl = document.createElement('span');
+      badgeEl.className = 'mbz-clip-badge';
+      badgeEl.textContent = badge;
+      btn.appendChild(badgeEl);
+    }
     btn.title = live
       ? `${p.name} · click queues at the next bar · key ${i + 1} · double-click renames`
       : `${p.name} · song mode: click selects the edit pattern`;
@@ -737,44 +1019,122 @@ function shortPatternLabel(name) {
   return s.length > 7 ? `${s.slice(0, 7)}…` : s;
 }
 
-function paintArrangeBar(b) {
-  if (b < 0 || b >= arrangeSlots.length) return;
-  const target = project.activePatternId;
-  arrangeSlots[b] = arrangeSlots[b] === target ? '' : target;
-  persist();
-  renderArrange();
+function slotCellClasses(index, id) {
+  return [
+    'mbz-slot',
+    index % arrDiv() === 0 ? 'is-bar' : '',
+    id ? 'is-filled' : '',
+    id && id === project.activePatternId ? 'is-edit' : '',
+  ].filter(Boolean).join(' ');
+}
+
+/** Paint one slot cell from arrangeSlots (no re-render during drags). */
+function paintSlotCell(cell, index) {
+  const d = arrDiv();
+  const id = arrangeSlots[index] || '';
+  const p = id ? project.patterns.find((x) => x.id === id) : null;
+  cell.className = slotCellClasses(index, id);
+  cell.dataset.slot = String(index);
+  if (p) {
+    cell.style.setProperty('--clip', clipColor(project.patterns.indexOf(p)));
+    cell.textContent = shortPatternLabel(p.name);
+    cell.title = `bar ${Math.floor(index / d) + 1}.${(index % d) + 1} · ${p.name} · click = rest`;
+  } else {
+    cell.style.removeProperty('--clip');
+    cell.textContent = '';
+    cell.title = `bar ${Math.floor(index / d) + 1}.${(index % d) + 1} · rest · click = paint ${activePattern()?.name || '?'}`;
+  }
+}
+
+/** Bar numbers above the slots; each label spans one bar's worth of slots. */
+function renderArrangeRuler(len) {
+  if (!arrangeRulerEl) return;
+  const d = arrDiv();
+  arrangeRulerEl.style.setProperty('--slots', String(len));
+  arrangeRulerEl.innerHTML = '';
+  for (let bar = 0; bar * d < len; bar += 1) {
+    const label = document.createElement('span');
+    label.textContent = String(bar + 1);
+    label.style.gridColumn = `span ${d}`;
+    arrangeRulerEl.appendChild(label);
+  }
 }
 
 function renderArrange() {
   if (!arrangeEl) return;
+  const d = arrDiv();
+  const len = Math.max(d, Math.min(MAX_ARRANGE_BARS * d, arrangeSlots.length || d));
+  arrangeEl.style.setProperty('--slots', String(len));
   arrangeEl.innerHTML = '';
-  const len = Math.max(1, Math.min(MAX_ARRANGE_BARS, arrangeSlots.length || 1));
-  const byId = new Map(project.patterns.map((p, i) => [p.id, { p, i }]));
-  for (let b = 0; b < len; b += 1) {
-    const id = arrangeSlots[b] || '';
-    const info = id ? byId.get(id) : null;
+  for (let i = 0; i < len; i += 1) {
     const cell = document.createElement('button');
     cell.type = 'button';
-    cell.className = `mbz-bar${info ? ' is-filled' : ''}${id && id === project.activePatternId ? ' is-edit' : ''}`;
-    cell.dataset.bar = String(b);
-    if (info) {
-      cell.style.setProperty('--clip', clipColor(info.i));
-      cell.title = `bar ${b + 1}: ${info.p.name} · click = clear`;
-    } else {
-      cell.title = `bar ${b + 1}: rest · click = paint ${activePattern()?.name || '?'}`;
-    }
-    const num = document.createElement('span');
-    num.textContent = String(b + 1);
-    const lbl = document.createElement('b');
-    lbl.textContent = info ? shortPatternLabel(info.p.name) : '·';
-    cell.appendChild(num);
-    cell.appendChild(lbl);
-    cell.addEventListener('click', () => paintArrangeBar(b));
+    cell.className = 'mbz-slot';
+    cell.dataset.slot = String(i);
+    paintSlotCell(cell, i);
+    // Pointer presses paint on pointerdown (drag support); clicks only matter
+    // for keyboard activation (Enter/Space report detail 0).
+    cell.addEventListener('click', (e) => {
+      if (e.detail !== 0) return;
+      paintSlot(i, { toggle: true });
+    });
+    cell.addEventListener('pointerdown', (e) => startArrangePaint(e, i));
+    cell.addEventListener('pointerenter', () => extendArrangePaint(i));
     arrangeEl.appendChild(cell);
   }
-  if (arrangeLenEl) arrangeLenEl.textContent = `${len} bar${len === 1 ? '' : 's'}`;
-  if (arrangeAddBtn) arrangeAddBtn.disabled = len >= MAX_ARRANGE_BARS;
-  if (arrangeDelBtn) arrangeDelBtn.disabled = len <= 1;
+  renderArrangeRuler(len);
+  const bars = Math.max(1, Math.round(len / d));
+  if (arrangeLenEl) arrangeLenEl.textContent = `${bars} bar${bars === 1 ? '' : 's'} · ${len} slot${len === 1 ? '' : 's'}`;
+  if (arrangeAddBtn) arrangeAddBtn.disabled = len >= MAX_ARRANGE_BARS * d;
+  if (arrangeDelBtn) arrangeDelBtn.disabled = len <= d;
+  if (arrangeClearBtn) arrangeClearBtn.disabled = !arrangeSlots.some(Boolean);
+  if (arrangeDivSel) arrangeDivSel.value = String(d);
+}
+
+function paintSlotValue(index, value) {
+  if (index < 0 || index >= arrangeSlots.length) return;
+  if ((arrangeSlots[index] || '') === value) return;
+  arrangeSlots[index] = value;
+  const cell = arrangeEl?.querySelector(`.mbz-slot[data-slot="${index}"]`);
+  if (cell) paintSlotCell(cell, index);
+}
+
+function paintSlot(index, { toggle = false } = {}) {
+  if (index < 0 || index >= arrangeSlots.length) return;
+  const target = project.activePatternId;
+  const current = arrangeSlots[index] || '';
+  paintSlotValue(index, toggle && current === target ? '' : target);
+  persist();
+  renderArrange();
+}
+
+let arrangePaint = null; // { value, visited:Set } while dragging across slots
+
+function startArrangePaint(e, index) {
+  if (e.button !== 0) return;
+  if (index < 0 || index >= arrangeSlots.length) return;
+  e.preventDefault();
+  const target = project.activePatternId;
+  const value = (arrangeSlots[index] || '') === target ? '' : target;
+  arrangePaint = { value, visited: new Set([index]) };
+  paintSlotValue(index, value);
+  const end = () => {
+    window.removeEventListener('pointerup', end);
+    window.removeEventListener('pointercancel', end);
+    if (!arrangePaint) return;
+    arrangePaint = null;
+    persist();
+    renderArrange();
+  };
+  window.addEventListener('pointerup', end);
+  window.addEventListener('pointercancel', end);
+}
+
+function extendArrangePaint(index) {
+  if (!arrangePaint || arrangePaint.visited.has(index)) return;
+  if (index < 0 || index >= arrangeSlots.length) return;
+  arrangePaint.visited.add(index);
+  paintSlotValue(index, arrangePaint.value);
 }
 
 function renderSession() {
@@ -801,7 +1161,7 @@ function setPlayMode(mode) {
   project.playMode = next;
   queuedPatternId = null;
   songPlayingPatternId = null;
-  arrangeSlots = arrangementToSlots(project.arrangement, Math.max(1, arrangementLengthBars(project.arrangement) || 1));
+  arrangeSlots = slotsFromProject();
   persist();
   renderSession();
   if (transport.isRunning()) {
@@ -814,7 +1174,6 @@ function setPlayMode(mode) {
 function refreshPatternViews() {
   persist();
   syncControlsFromProject();
-  renderPatterns();
   renderGrid();
   renderSession();
   updateVelocityUi();
@@ -1542,21 +1901,29 @@ swingInput.addEventListener('input', () => {
 sigSelect.addEventListener('change', () => {
   const [a, b] = sigSelect.value.split('/').map(Number);
   project.timeSignature = [a || 4, b || 4];
+  // Steps-per-bar changed: every clip's grid has to follow the new signature.
+  for (const p of project.patterns) {
+    p.timeSignature = project.timeSignature;
+    resizePatternSteps(p, project.timeSignature);
+  }
   persist();
   renderGrid();
+  renderSession();
+  updateVelocityUi();
 });
 barsSelect.addEventListener('change', () => {
   const pat = activePattern();
   if (pat) {
     pat.bars = Math.min(4, Math.max(1, parseInt(barsSelect.value, 10) || 1));
-    const len = getTotalSteps();
+    // Resize to the CLIP length, not the song timeline (song mode used to
+    // stretch step arrays to the whole arrangement).
+    const len = patternStepCount(pat);
     for (const ch of pat.channels) ch.steps = Array.from({ length: len }, (_, i) => ch.steps[i] || null);
   }
   persist();
   renderGrid();
-});
-patternSelect.addEventListener('change', () => {
-  setActivePattern(patternSelect.value);
+  renderSession();
+  updateVelocityUi();
 });
 
 /** Session controls: mode, launch pads, timeline length, pattern bank. */
@@ -1573,21 +1940,64 @@ arrangeLoopEl?.addEventListener('change', () => {
   renderSession();
 });
 arrangeAddBtn?.addEventListener('click', () => {
-  if (arrangeSlots.length >= MAX_ARRANGE_BARS) return;
-  arrangeSlots.push('');
+  const d = arrDiv();
+  if (arrangeSlots.length + d > MAX_ARRANGE_BARS * d) return;
+  for (let k = 0; k < d; k += 1) arrangeSlots.push('');
   persist();
   renderArrange();
 });
 arrangeDelBtn?.addEventListener('click', () => {
-  if (arrangeSlots.length <= 1) return;
-  arrangeSlots.pop();
+  const d = arrDiv();
+  if (arrangeSlots.length <= d) return;
+  arrangeSlots.splice(arrangeSlots.length - d, d);
   persist();
   renderArrange();
+});
+arrangeClearBtn?.addEventListener('click', () => {
+  if (!arrangeSlots.some(Boolean)) return;
+  arrangeSlots = arrangeSlots.map(() => '');
+  persist();
+  renderArrange();
+});
+arrangeDivSel?.addEventListener('change', () => {
+  const prev = arrDiv();
+  const next = normalizeArrangeDiv(arrangeDivSel.value);
+  if (next === prev) return;
+  project.arrangeDiv = next;
+  arrangeSlots = resampleSlots(arrangeSlots, prev, next);
+  persist();
+  renderArrange();
+  renderSession();
 });
 patternNewBtn?.addEventListener('click', addPattern);
 patternDupBtn?.addEventListener('click', duplicateActivePattern);
 patternRenBtn?.addEventListener('click', () => startRename(project.activePatternId));
 patternDelBtn?.addEventListener('click', deleteActivePattern);
+
+/** "+ track" menu (drum / instrument / chord). */
+trackAddBtn?.addEventListener('click', (e) => {
+  e.stopPropagation();
+  if (!trackAddMenu) return;
+  trackAddMenu.hidden = !trackAddMenu.hidden;
+});
+trackAddMenu?.querySelectorAll('[data-track-kind]').forEach((btn) => {
+  btn.addEventListener('click', () => {
+    addTrack(btn.dataset.trackKind);
+    if (trackAddMenu) trackAddMenu.hidden = true;
+  });
+});
+
+/** Click-away for the + track menu and the per-row track editor. */
+document.addEventListener('pointerdown', (e) => {
+  if (trackAddMenu && !trackAddMenu.hidden && !e.target.closest?.('.mbz-track-add')) {
+    trackAddMenu.hidden = true;
+  }
+  if (!trackPopoverId) return;
+  if (e.target.closest?.('.mbz-track-pop')) return;
+  if (e.target.closest?.('.mbz-ch-name')) return; // the name button toggles itself
+  trackPopoverId = null;
+  renderGrid();
+}, true);
 
 /** FX strip: sliders are views on the same params knobs write to. */
 function syncFxStrip() {
@@ -1677,7 +2087,7 @@ document.querySelector('[data-capture]').addEventListener('click', (e) => {
       const sps = 60 / getBpm() / 4;
       for (const hit of recordBuffer) {
         const dt = Math.max(0, hit.t - loopOriginTime);
-        const stepIdx = Math.round(dt / sps) % Math.max(1, getTotalSteps());
+        const stepIdx = Math.round(dt / sps) % Math.max(1, patternStepCount(activePattern()));
         let ch = null;
         if (hit.kind === 'pad' && hit.entry?.target === 'drum') {
           ch = pat.channels.find((c) => c.type === 'percussion' && c.voiceId === hit.entry.voiceId)
@@ -1707,14 +2117,16 @@ document.querySelector('[data-grid-reset]').addEventListener('click', () => {
   queuedPatternId = null;
   songPlayingPatternId = null;
   renamePatternId = null;
+  trackPopoverId = null;
+  arrangePaint = null;
   launchPads = false;
-  arrangeSlots = arrangementToSlots(project.arrangement, 1);
+  reloadArrangeSlots();
   persist();
   syncControlsFromProject();
-  renderPatterns();
   renderGrid();
   renderSession();
   renderPads();
+  updateVelocityUi();
 });
 keysCurveSel.addEventListener('change', () => { keysCurve = keysCurveSel.value; });
 
@@ -1824,7 +2236,6 @@ if (fwBtn) {
 }
 
 syncControlsFromProject();
-renderPatterns();
 renderGrid();
 renderSession();
 renderKeyboard();

@@ -32,7 +32,7 @@
     </header>
 
     <main class="mbz-console" aria-label="MPK mini console">
-      <section class="mbz-row mbz-knobs-row" aria-label="Knobs and controls">
+      <section class="mbz-row mbz-row--knobs" aria-label="Knobs, stick and control">
         <div class="mbz-block">
           <h2>knobs <span class="mbz-hint">K1–K8 · click = assign · learn = MIDI CC</span></h2>
           <div class="mbz-knobs" data-knobs></div>
@@ -58,7 +58,7 @@
           <p class="mbz-note" data-stick-hint>hw silent? drag the dot or sliders — same targets.</p>
         </div>
         <div class="mbz-block">
-          <h2>control</h2>
+          <h2>control <span class="mbz-hint">audition · capture</span></h2>
           <div class="mbz-control-grid">
             <button type="button" class="mbz-btn" data-oct-down title="Octave down">oct −</button>
             <span class="mbz-oct-label" data-oct-label>oct 3</span>
@@ -68,37 +68,9 @@
             <button type="button" class="mbz-btn is-on" data-audition title="Audition on/off">listen</button>
             <button type="button" class="mbz-btn" data-capture title="Capture pads+keys into grid">capture</button>
           </div>
-          <p class="mbz-note">pads + keys live in parallel. capture writes into the active pattern.</p>
-        </div>
-      </section>
-
-      <section class="mbz-row" aria-label="Transport and pattern">
-        <div class="mbz-block mbz-transport">
-          <h2>transport</h2>
-          <div class="mbz-transport-grid">
-            <button type="button" class="mbz-btn mbz-big" data-play title="Play">▶</button>
-            <button type="button" class="mbz-btn mbz-big" data-stop title="Stop" disabled>■</button>
-            <label>BPM <input type="number" data-bpm value="120" min="30" max="250"></label>
-            <label>swing <input type="range" data-swing min="0" max="100" value="0"><span data-swing-val>0%</span></label>
-            <label>sig
-              <select data-sig>
-                <option value="4/4">4/4</option>
-                <option value="3/4">3/4</option>
-                <option value="6/8">6/8</option>
-              </select>
-            </label>
-            <label>bars
-              <select data-bars>
-                <option value="1">1b</option>
-                <option value="2">2b</option>
-                <option value="3">3b</option>
-                <option value="4">4b</option>
-              </select>
-            </label>
-            <label>pattern <select data-pattern></select></label>
-          </div>
-          <p class="mbz-note" data-project-note>project: magicbeatz-v1</p>
-          <p class="mbz-note" data-midi-monitor title="Last raw MIDI message — tap hardware to see its channel + note">midi: —</p>
+          <p class="mbz-note">pads + keys live in parallel. capture writes into the active clip.</p>
+          <p class="mbz-note mbz-status-line" data-project-note>project: magicbeatz-v3</p>
+          <p class="mbz-note mbz-status-line" data-midi-monitor title="Last raw MIDI message — tap hardware to see its channel + note">midi: —</p>
           <div class="mbz-fx-strip" aria-label="Master FX">
             <h3>fx <span class="mbz-hint">master chain · same params as knobs</span></h3>
             <div class="mbz-fx-grid">
@@ -108,52 +80,12 @@
             </div>
           </div>
         </div>
+      </section>
+
+      <section class="mbz-row mbz-row--perf" aria-label="Pads and keys">
         <div class="mbz-block mbz-pads-block">
           <h2>pads <span class="mbz-hint">Bank <b data-bank-label>A</b> · tap = play · gear = map</span></h2>
           <div class="mbz-pads" data-pads></div>
-        </div>
-      </section>
-
-      <section class="mbz-row mbz-session-row" aria-label="Session — clip launcher and arrangement">
-        <div class="mbz-block mbz-session-block">
-          <h2>session <span class="mbz-hint">click a clip = queue at next bar · keys 1–8 · double-click = rename</span></h2>
-          <div class="mbz-session-tools">
-            <div class="mbz-mode-toggle" role="group" aria-label="Play mode">
-              <button type="button" class="mbz-btn" data-mode-live title="Live looper — clips queue at bar boundaries">live</button>
-              <button type="button" class="mbz-btn" data-mode-song title="Song mode — follows the arrangement timeline">song</button>
-            </div>
-            <button type="button" class="mbz-btn" data-launch-mode title="Map MPK pads P1–P8 to clip launch">launch pads</button>
-            <span class="mbz-session-spacer"></span>
-            <button type="button" class="mbz-btn" data-pattern-new title="Add an empty pattern">+ new</button>
-            <button type="button" class="mbz-btn" data-pattern-dup title="Duplicate the selected pattern">dup</button>
-            <button type="button" class="mbz-btn" data-pattern-ren title="Rename the selected pattern">ren</button>
-            <button type="button" class="mbz-btn" data-pattern-del title="Delete the selected pattern">del</button>
-          </div>
-          <div class="mbz-clips" data-clips aria-label="Clip launcher"></div>
-          <div class="mbz-arrange" aria-label="Arrangement timeline">
-            <div class="mbz-arrange-head">
-              <span>arrange <span class="mbz-hint" data-arrange-len>1 bar</span></span>
-              <span class="mbz-session-spacer"></span>
-              <label class="mbz-arrange-loop"><input type="checkbox" data-arrange-loop checked> loop</label>
-              <button type="button" class="mbz-btn" data-arrange-add title="Add a bar">+bar</button>
-              <button type="button" class="mbz-btn" data-arrange-del title="Remove the last bar">−bar</button>
-            </div>
-            <div class="mbz-arrange-track" data-arrange></div>
-          </div>
-          <p class="mbz-note">paint: click a bar to assign the selected pattern · click again = rest · song mode follows this timeline<span data-launch-hint></span></p>
-        </div>
-      </section>
-
-      <section class="mbz-row" aria-label="Sequencer and keys">
-        <div class="mbz-block mbz-grid-block">
-          <h2>grid <span class="mbz-hint">click steps · velocity below</span></h2>
-          <div class="mbz-grid-wrap"><div class="mbz-grid" data-grid role="grid" aria-label="Step sequencer"></div></div>
-          <div class="mbz-vel-row">
-            <label>velocity <input type="range" data-velocity min="10" max="100" value="80" disabled></label>
-            <span data-velocity-val>—</span>
-            <button type="button" class="mbz-btn" data-grid-clear>clear</button>
-            <button type="button" class="mbz-btn" data-grid-reset>factory</button>
-          </div>
         </div>
         <div class="mbz-block mbz-keys-block">
           <h2>keys <span class="mbz-hint">25 keys · computer A–\ + MIDI</span></h2>
@@ -171,8 +103,99 @@
           <div class="mbz-keyboard" data-keyboard aria-label="Piano keyboard"></div>
         </div>
       </section>
+      <section class="mbz-row mbz-row--stage" aria-label="Transport, clips, grid and arrangement">
+        <div class="mbz-block mbz-stage">
+          <div class="mbz-transport-bar" aria-label="Transport">
+            <button type="button" class="mbz-btn mbz-big" data-play title="Play">▶</button>
+            <button type="button" class="mbz-btn mbz-big" data-stop title="Stop" disabled>■</button>
+            <label class="mbz-tb-field">BPM <input type="number" data-bpm value="120" min="30" max="250"></label>
+            <label class="mbz-tb-field">swing <input type="range" data-swing min="0" max="100" value="0"><span data-swing-val>0%</span></label>
+            <label class="mbz-tb-field">sig
+              <select data-sig>
+                <option value="4/4">4/4</option>
+                <option value="3/4">3/4</option>
+                <option value="6/8">6/8</option>
+              </select>
+            </label>
+            <label class="mbz-tb-field">clip bars
+              <select data-bars>
+                <option value="1">1b</option>
+                <option value="2">2b</option>
+                <option value="3">3b</option>
+                <option value="4">4b</option>
+              </select>
+            </label>
+            <span class="mbz-session-spacer"></span>
+            <div class="mbz-mode-toggle" role="group" aria-label="Play mode">
+              <button type="button" class="mbz-btn" data-mode-live title="Live looper — clips queue at bar boundaries">live</button>
+              <button type="button" class="mbz-btn" data-mode-song title="Song mode — follows the arrangement timeline">song</button>
+            </div>
+          </div>
 
-      <section class="mbz-row" aria-label="Pad mapping">
+          <div class="mbz-stage-body">
+            <div class="mbz-session-rail">
+              <div class="mbz-rail-head">
+                <h2>clips <span class="mbz-hint">click queues · dbl-click renames</span></h2>
+              </div>
+              <div class="mbz-clips" data-clips aria-label="Clip launcher"></div>
+              <div class="mbz-session-tools">
+                <button type="button" class="mbz-btn" data-pattern-new title="Add an empty clip">+ new</button>
+                <button type="button" class="mbz-btn" data-pattern-dup title="Duplicate the selected clip">dup</button>
+                <button type="button" class="mbz-btn" data-pattern-ren title="Rename the selected clip">ren</button>
+                <button type="button" class="mbz-btn" data-pattern-del title="Delete the selected clip">del</button>
+                <span class="mbz-session-spacer"></span>
+                <button type="button" class="mbz-btn" data-launch-mode title="Map MPK pads P1–P8 to clip launch">launch pads</button>
+              </div>
+            </div>
+
+            <div class="mbz-grid-panel">
+              <div class="mbz-rail-head">
+                <h2>grid <span class="mbz-hint" data-grid-title>—</span></h2>
+              </div>
+              <div class="mbz-grid-wrap"><div class="mbz-grid" data-grid role="grid" aria-label="Step sequencer"></div></div>
+              <div class="mbz-vel-row">
+                <label>velocity <input type="range" data-velocity min="10" max="100" value="80" disabled></label>
+                <span data-velocity-val>—</span>
+                <button type="button" class="mbz-btn" data-grid-clear>clear</button>
+                <button type="button" class="mbz-btn" data-grid-reset>factory</button>
+                <span class="mbz-session-spacer"></span>
+                <span class="mbz-track-add">
+                  <button type="button" class="mbz-btn" data-track-add title="Add a track to this clip">+ track ▾</button>
+                  <span class="mbz-track-add-menu" data-track-add-menu hidden>
+                    <button type="button" class="mbz-btn" data-track-kind="percussion">drum</button>
+                    <button type="button" class="mbz-btn" data-track-kind="note">instrument</button>
+                    <button type="button" class="mbz-btn" data-track-kind="chord">chord</button>
+                  </span>
+                </span>
+              </div>
+            </div>
+          </div>
+
+          <div class="mbz-arrange" aria-label="Arrangement timeline">
+            <div class="mbz-arrange-head">
+              <span>arrange <span class="mbz-hint" data-arrange-len>1 bar</span></span>
+              <span class="mbz-session-spacer"></span>
+              <label class="mbz-arrange-loop" title="How many arrangement slots fit in one bar">slots
+                <select data-arrange-div>
+                  <option value="1">1 / bar</option>
+                  <option value="2">2 / bar</option>
+                  <option value="4" selected>4 / bar</option>
+                </select>
+              </label>
+              <label class="mbz-arrange-loop"><input type="checkbox" data-arrange-loop checked> loop</label>
+              <button type="button" class="mbz-btn" data-arrange-add title="Add a bar">+bar</button>
+              <button type="button" class="mbz-btn" data-arrange-del title="Remove the last bar">−bar</button>
+              <button type="button" class="mbz-btn" data-arrange-clear title="Clear every arrangement slot">clear</button>
+            </div>
+            <div class="mbz-arrange-scroll">
+              <div class="mbz-arrange-ruler" data-arrange-ruler aria-hidden="true"></div>
+              <div class="mbz-arrange-grid" data-arrange role="grid" aria-label="Arrangement slots"></div>
+            </div>
+          </div>
+          <p class="mbz-note">paint: click or drag slots with the selected clip · click a filled slot = rest · song mode follows this timeline<span data-launch-hint></span></p>
+        </div>
+      </section>
+      <section class="mbz-row mbz-row--map" aria-label="Pad mapping">
         <div class="mbz-block mbz-map-block">
           <h2>pad map <span class="mbz-hint">each pad = a tab: drum · note · chord</span></h2>
           <div class="mbz-pad-editors" data-pad-editors></div>
