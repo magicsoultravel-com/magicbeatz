@@ -1,81 +1,164 @@
 /**
- * smplr sample bridge — lazy sampled instruments with synth fallback.
+ * smplr sample bridge — lazy sampled instruments + drum machines.
  *
- * - Each 'sample' registry entry maps to a smplr factory call.
+ * - Catalog sounds resolve to smplr factories at first use.
+ * - Drum kits are cached as `drum:<kitId>` instances.
  * - Instances connect to our master bus (destination: getMasterBus()).
- * - Until loaded (or offline), play falls back to the registry `fallback`
- *   synth voice — never silent, never blocking.
- * - Status listeners drive the UI pill + per-instrument spinner:
- *   'loading' | 'ready' | 'offline' | 'error:<id>'.
+ * - Samples never fall back to a fake synth: while loading they are silent,
+ *   and the UI shows queued/loading/error state.
+ * - Status listeners drive the console pill, sound browser rows and buttons.
  *
  * Importing 'smplr' is static so Vite bundles it; samples themselves stream
- * from CDN on first use and are cached by smplr's storage.
- *
- * NOTE: static import keeps Vite builds working. Plain `file://` or static
- * servers without a bundler need an import map — see index.html.
+ * from the CDN on first use and are cached by smplr's storage.
  */
-import { SplendidGrandPiano, Soundfont, Smolken, ElectricPiano } from 'smplr';
+import {
+  SplendidGrandPiano,
+  Soundfont,
+  Smolken,
+  ElectricPiano,
+  Mellotron,
+  DrumMachine,
+} from 'smplr';
 import { ensureAudio, getMasterBus, peekAudioContext } from './context.js';
 import { pitchToMidi } from '../midi/notes.js';
+import {
+  resolveSound,
+  resolveKitOr,
+  kitSampleForVoice,
+  DEFAULT_INSTRUMENT_ID,
+} from './catalog.js';
 
 const statusListeners = new Set();
 let status = {};
+const progress = {};
+const lastProgressNotify = {};
+
 function setStatus(id, state) {
+  if (status[id] === state) return;
   status = { ...status, [id]: state };
   for (const fn of statusListeners) {
     try { fn(id, state, status); } catch { /* ignore */ }
   }
 }
+
+function setProgress(id, loaded, total) {
+  progress[id] = { loaded: loaded || 0, total: total || 0 };
+  const now = Date.now();
+  if (now - (lastProgressNotify[id] || 0) < 120) return;
+  lastProgressNotify[id] = now;
+  for (const fn of statusListeners) {
+    try { fn(id, 'loading', status); } catch { /* ignore */ }
+  }
+}
+
 export function onSamplerStatus(fn) {
   statusListeners.add(fn);
   return () => statusListeners.delete(fn);
 }
+
 export function samplerStatus() { return status; }
 
-/** Registry id → smplr factory. Keep lazy: constructed on first gesture. */
-const FACTORIES = {
-  grand: (ctx, dest) => SplendidGrandPiano(ctx, { destination: dest }),
-  // Greg Sullivan Wurlitzer pack has corrupt/undecodable ogg on some builds
-  // (ab6mp.ogg EncodingError) — use FluidR3 GM e-piano from the same family
-  // as the working nylon path instead.
-  'e-piano': (ctx, dest) => Soundfont(ctx, { destination: dest, instrument: 'electric_piano_1', formats: ['m4a', 'ogg'] }),
-  nylon: (ctx, dest) => Soundfont(ctx, { destination: dest, instrument: 'acoustic_guitar_nylon' }),
-  upright: (ctx, dest) => Smolken(ctx, { destination: dest, instrument: 'Pizzicato' }),
-};
+/** Rich status for the browser/buttons: { state, loaded, total }. */
+export function sampleStatus(id) {
+  return {
+    state: status[id] || 'idle',
+    loaded: progress[id]?.loaded || 0,
+    total: progress[id]?.total || 0,
+  };
+}
 
 const instances = new Map(); // id → { inst, ready: Promise }
 const pending = new Map(); // id → Promise (dedupe concurrent loads)
 
-function midiFor(pitch, octave) {
-  const midi = pitchToMidi(pitch, octave);
-  return typeof midi === 'number' ? midi : null;
+function canonicalId(id) {
+  if (!id) return '';
+  if (String(id).startsWith('drum:')) return String(id);
+  return resolveSound(id)?.id || '';
 }
 
-/** Load (or return cached) smplr instance for a sample instrument. */
-export function ensureSample(id) {
+/** Cache id for a drum kit. */
+export function drumSampleId(kitId) {
+  return `drum:${resolveKitOr(kitId)?.id || 'studio'}`;
+}
+
+function makeFactory(id) {
+  if (id.startsWith('drum:')) {
+    const kit = resolveKitOr(id.slice(5));
+    if (!kit) return null;
+    return (ctx, dest, onProgress) => DrumMachine(ctx, {
+      destination: dest,
+      instrument: kit.machine,
+      onLoadProgress: onProgress,
+    });
+  }
+  const sound = resolveSound(id);
+  if (!sound || sound.engine !== 'sample' || !sound.source) return null;
+  const src = sound.source;
+  if (src.type === 'splendid') {
+    return (ctx, dest, onProgress) => SplendidGrandPiano(ctx, {
+      destination: dest,
+      onLoadProgress: onProgress,
+    });
+  }
+  if (src.type === 'soundfont') {
+    return (ctx, dest, onProgress) => Soundfont(ctx, {
+      destination: dest,
+      kit: 'MusyngKite',
+      instrument: src.instrument,
+      formats: ['m4a', 'ogg'],
+      onLoadProgress: onProgress,
+    });
+  }
+  if (src.type === 'electricPiano') {
+    return (ctx, dest, onProgress) => ElectricPiano(ctx, {
+      destination: dest,
+      instrument: src.instrument,
+      onLoadProgress: onProgress,
+    });
+  }
+  if (src.type === 'smolken') {
+    return (ctx, dest, onProgress) => Smolken(ctx, {
+      destination: dest,
+      instrument: src.instrument,
+      onLoadProgress: onProgress,
+    });
+  }
+  if (src.type === 'mellotron') {
+    return (ctx, dest, onProgress) => Mellotron(ctx, {
+      destination: dest,
+      instrument: src.instrument,
+      onLoadProgress: onProgress,
+    });
+  }
+  return null;
+}
+
+/** Load (or return cached) smplr instance for a catalog sound / kit id. */
+export function ensureSample(rawId) {
+  const id = canonicalId(rawId);
+  if (!id) return Promise.resolve(null);
   if (instances.has(id)) return instances.get(id).ready;
   if (pending.has(id)) return pending.get(id);
-  const factory = FACTORIES[id];
+  const factory = makeFactory(id);
   if (!factory) return Promise.resolve(null);
-  // No AudioContext before a gesture — mark pending, real load happens on
+  // No AudioContext before a gesture — mark pending; real load happens on
   // first ensureAudio(). Avoids the Chrome autoplay warning entirely.
   if (!peekAudioContext()) {
     setStatus(id, 'pending-gesture');
     return Promise.resolve(null);
   }
   setStatus(id, 'loading');
+  setProgress(id, 0, 0);
   const p = (async () => {
     try {
       const ctx = ensureAudio();
-      const inst = factory(ctx, getMasterBus());
+      const inst = factory(ctx, getMasterBus(), (p) => setProgress(id, p?.loaded, p?.total));
       await inst.load;
       instances.set(id, { inst, ready: Promise.resolve(inst) });
       setStatus(id, 'ready');
       return inst;
     } catch (err) {
-      // One bad sample (e.g. corrupt ogg) must not hang the instrument in
-      // 'loading' — mark error so UI falls back to synth and can retry.
-      console.warn(`[sampler] ${id} failed, synth fallback:`, err?.message || err);
+      console.warn(`[sampler] ${id} failed:`, err?.message || err);
       setStatus(id, 'error');
       return null;
     } finally {
@@ -86,44 +169,60 @@ export function ensureSample(id) {
   return p;
 }
 
-export function isSampleReady(id) {
-  return instances.has(id);
+export function ensureDrumKit(kitId) {
+  return ensureSample(drumSampleId(kitId));
 }
 
-/** Preload the default piano — call only from a user gesture. */
-export function preloadDefaults() {
+export function isSampleReady(rawId) {
+  return instances.has(canonicalId(rawId));
+}
+
+/** Preload the selected default instrument — call only from a user gesture. */
+export function preloadDefaults(id = DEFAULT_INSTRUMENT_ID) {
+  const sound = resolveSound(id);
+  const soundId = sound?.kind === 'pitched' ? sound.id : DEFAULT_INSTRUMENT_ID;
   if (!peekAudioContext()) {
-    setStatus('grand', 'pending-gesture');
+    setStatus(soundId, 'pending-gesture');
     return;
   }
-  ensureSample('grand');
+  ensureSample(soundId);
 }
 
-/** Kick off pending loads after first gesture (called by ensureAudio paths). */
+/** Kick off pending loads after first gesture (called by gesture paths). */
 export function flushPendingLoads() {
   for (const [id, state] of Object.entries(samplerStatus())) {
     if (state === 'pending-gesture') ensureSample(id);
   }
-  // Always want grand ready; if never requested, request now (post-gesture).
-  if (!instances.has('grand') && !pending.has('grand')) ensureSample('grand');
+}
+
+
+function midiFor(pitch, octave) {
+  const midi = pitchToMidi(pitch, octave);
+  return typeof midi === 'number' ? midi : null;
+}
+
+function scheduleTime(when) {
+  const ctx = peekAudioContext() || ensureAudio();
+  if (when == null) return { ctx, time: undefined };
+  const delay = Math.max(0, when - ctx.currentTime);
+  return { ctx, time: delay > 0.001 ? ctx.currentTime + delay : undefined };
 }
 
 /**
- * Play a sampled note. Returns true if handled (instance ready),
- * false → caller should use the synth fallback voice.
+ * Play a sampled pitched note.
+ * Returns true only when the sample instance is ready; callers stay silent
+ * (and the UI shows loading) rather than substituting a synth.
  */
 export function playSample(id, pitch, octave, when, velocity = 0.8) {
-  const entry = instances.get(id);
+  const entry = instances.get(canonicalId(id));
   if (!entry) {
-    ensureSample(id); // kick off load for next time
+    ensureSample(id);
     return false;
   }
   const midi = midiFor(pitch, octave);
   if (midi == null) return false;
   try {
-    const ctx = peekAudioContext() || ensureAudio();
-    const delay = when == null ? 0 : Math.max(0, when - ctx.currentTime);
-    const time = delay > 0.001 ? ctx.currentTime + delay : undefined;
+    const { time } = scheduleTime(when);
     entry.inst.start({ note: midi, velocity: Math.round(velocity * 127), time });
     return true;
   } catch (err) {
@@ -132,11 +231,34 @@ export function playSample(id, pitch, octave, when, velocity = 0.8) {
   }
 }
 
-/**
- * Start a sampled sustain (keyboard hold). Returns stop fn or null.
- */
-export function startSampleSustain(id, pitch, octave, velocity = 0.85) {
+/** Play a logical drum voice from a sampled kit. */
+export function playDrumSample(kitId, voiceId, when, velocity = 0.8) {
+  const id = drumSampleId(kitId);
   const entry = instances.get(id);
+  if (!entry) {
+    ensureSample(id);
+    return false;
+  }
+  const sample = kitSampleForVoice(kitId, voiceId);
+  if (!sample) return false;
+  try {
+    const { time } = scheduleTime(when);
+    entry.inst.start({
+      note: sample,
+      velocity: Math.round(velocity * 127),
+      time,
+      stopId: `voice:${voiceId}`,
+    });
+    return true;
+  } catch (err) {
+    console.warn(`[sampler] drum ${kitId}/${voiceId} failed:`, err?.message || err);
+    return false;
+  }
+}
+
+/** Start a sampled sustain (keyboard hold). Returns stop fn or null. */
+export function startSampleSustain(id, pitch, octave, velocity = 0.85) {
+  const entry = instances.get(canonicalId(id));
   if (!entry) {
     ensureSample(id);
     return null;
@@ -151,9 +273,14 @@ export function startSampleSustain(id, pitch, octave, velocity = 0.85) {
   }
 }
 
-/** Duration helper: smplr start() returns a stop fn; one-shots ring out. */
+/** smplr start() returns a stop fn; one-shots ring out naturally. */
 export function stopSampleSustain(stopFn) {
   try {
     if (typeof stopFn === 'function') stopFn();
   } catch { /* ignore */ }
+}
+
+/** Debug helper for the browser/status UI. */
+export function loadedSampleIds() {
+  return [...instances.keys()];
 }

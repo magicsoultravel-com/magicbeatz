@@ -210,3 +210,125 @@ body {
 .mbz-nav-link:hover { color: var(--mbz-text); border-color: var(--mbz-accent-2); }
 .mbz-nav-link.is-active { background: var(--mbz-accent-2); color: #08130d; border-color: transparent; }
 @media (max-width: 760px) { .mbz-top-status { flex-wrap: wrap; } }
+
+/* ---------- sound buttons + sampled status ---------- */
+.mbz-sound-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  max-width: 100%;
+  min-width: 0;
+  background: #121016;
+  color: var(--mbz-text);
+  border: 1px solid var(--mbz-line);
+  border-radius: 8px;
+  padding: 6px 8px;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+.mbz-sound-btn:hover, .mbz-sound-btn:focus-visible { border-color: var(--mbz-accent-3); outline: none; }
+@keyframes mbz-dot-blink { from { opacity: 0.35; } to { opacity: 1; } }
+.mbz-sound-btn > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mbz-sound-btn::after {
+  content: "▾";
+  color: var(--mbz-dim);
+  font-size: 10px;
+  flex: none;
+}
+.mbz-sound-dot { width: 7px; height: 7px; border-radius: 50%; background: #6f6880; flex: none; }
+.mbz-sound-dot[data-state="ready"] { background: var(--mbz-accent-2); box-shadow: 0 0 7px rgba(87,230,168,.6); }
+.mbz-sound-dot[data-state="loading"] { background: #ffb84d; animation: mbz-dot-blink 0.7s infinite alternate; }
+.mbz-sound-dot[data-state="pending-gesture"] { background: transparent; border: 1px solid var(--mbz-accent-3); }
+.mbz-sound-dot[data-state="error"] { background: var(--mbz-accent); }
+.mbz-keys-bar { align-items: center; flex-wrap: wrap; }
+.mbz-keys-bar label { display: inline-flex; align-items: center; gap: 8px; }
+.mbz-keys-bar .mbz-sound-btn { min-width: 230px; }
+.mbz-pad-kits { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 10px; }
+.mbz-pad-kits .mbz-sound-btn { width: 100%; }
+.mbz-pad-kits small { display: block; color: var(--mbz-dim); font-size: 10px; margin-top: 3px; }
+.mbz-pad-editor .mbz-sound-btn { width: 100%; }
+.mbz-track-pop .mbz-sound-btn { width: 100%; font-size: 11px; padding: 5px 6px; }
+
+/* ---------- searchable sound browser ---------- */
+body.mbz-browser-open { overflow: hidden; }
+.mbz-browser {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  background: rgba(8, 6, 12, 0.72);
+  backdrop-filter: blur(4px);
+}
+.mbz-browser-panel {
+  width: min(760px, 100%);
+  max-height: min(82vh, 720px);
+  display: grid;
+  grid-template-rows: auto auto auto minmax(0, 1fr) auto;
+  gap: 10px;
+  background: linear-gradient(180deg, #262330, #191722);
+  border: 1px solid #4a4460;
+  border-radius: 16px;
+  padding: 14px;
+  box-shadow: 0 24px 70px rgba(0,0,0,.62);
+}
+.mbz-browser-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
+.mbz-browser-head h2 { margin: 0; font-size: 16px; letter-spacing: .03em; text-transform: lowercase; }
+.mbz-browser-head p { margin: 3px 0 0; color: var(--mbz-dim); font-size: 11px; }
+.mbz-browser-close {
+  background: #121016; color: var(--mbz-text); border: 1px solid var(--mbz-line);
+  border-radius: 999px; width: 30px; height: 30px; font-size: 18px; line-height: 1; cursor: pointer;
+}
+.mbz-browser-search {
+  display: grid; grid-template-columns: 18px 1fr; align-items: center; gap: 6px;
+  background: #121016; border: 1px solid var(--mbz-line); border-radius: 10px; padding: 7px 10px;
+  color: var(--mbz-dim);
+}
+.mbz-browser-search input {
+  width: 100%; border: 0; outline: 0; background: transparent; color: var(--mbz-text);
+  font: inherit; font-size: 14px;
+}
+.mbz-browser-cats { display: flex; gap: 6px; flex-wrap: wrap; }
+.mbz-browser-chip {
+  background: #191722; color: var(--mbz-dim); border: 1px solid var(--mbz-line);
+  border-radius: 999px; padding: 4px 9px; font-size: 11px; cursor: pointer;
+}
+.mbz-browser-chip.is-active { background: var(--mbz-accent-3); color: #081020; border-color: transparent; font-weight: 700; }
+.mbz-browser-list {
+  overflow-y: auto; display: grid; align-content: start; gap: 5px;
+  padding: 3px; border: 1px solid var(--mbz-line); border-radius: 10px; background: #121016;
+  min-height: 180px;
+}
+.mbz-browser-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  width: 100%; text-align: left; background: #1d1a27; color: var(--mbz-text);
+  border: 1px solid transparent; border-radius: 8px; padding: 8px 10px; cursor: pointer;
+}
+.mbz-browser-row:hover, .mbz-browser-row:focus-visible { border-color: var(--mbz-accent-3); outline: none; }
+.mbz-browser-row.is-selected { border-color: var(--mbz-accent-2); background: #1b2a25; }
+.mbz-browser-main { display: grid; gap: 2px; min-width: 0; }
+.mbz-browser-name { font-size: 13px; font-weight: 650; }
+.mbz-browser-meta { color: var(--mbz-dim); font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mbz-browser-detail { color: #8e86a1; font-size: 10px; }
+.mbz-browser-status {
+  flex: none; font-size: 9px; text-transform: uppercase; letter-spacing: .05em;
+  border: 1px solid var(--mbz-line); border-radius: 999px; padding: 3px 7px; color: #777084;
+}
+.mbz-browser-status.is-ready { color: #08130d; background: var(--mbz-accent-2); border-color: transparent; }
+.mbz-browser-status.is-loading { color: #241a06; background: #ffb84d; border-color: transparent; animation: mbz-dot-blink 0.75s infinite alternate; }
+.mbz-browser-status.is-pending-gesture { color: var(--mbz-accent-3); border-color: var(--mbz-accent-3); }
+.mbz-browser-status.is-error { color: #fff; background: var(--mbz-accent); border-color: transparent; }
+.mbz-browser-empty { color: var(--mbz-dim); font-size: 12px; text-align: center; padding: 30px 12px; margin: 0; }
+.mbz-browser-foot { display: flex; justify-content: space-between; gap: 10px; color: var(--mbz-dim); font-size: 10px; }
+.mbz-browser-foot span:last-child { font-variant-numeric: tabular-nums; white-space: nowrap; }
+@media (max-width: 620px) {
+  .mbz-browser { padding: 8px; }
+  .mbz-browser-panel { max-height: 90vh; padding: 10px; }
+  .mbz-browser-row { padding: 7px 8px; }
+  .mbz-browser-detail { display: none; }
+  .mbz-pad-kits { grid-template-columns: 1fr; }
+  .mbz-keys-bar .mbz-sound-btn { min-width: 0; width: 100%; }
+}

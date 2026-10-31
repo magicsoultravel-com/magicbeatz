@@ -4,8 +4,8 @@
  */
 import { getAudioContext, getMasterBus, peekAudioContext } from './context.js';
 import { pitchToIndex } from '../theory/music.js';
-import { resolveInstrument } from './instruments.js';
-import { ensureSample, isSampleReady, playSample, startSampleSustain, stopSampleSustain } from './sampler.js';
+import { resolveInstrument, INSTRUMENTS } from './instruments.js';
+import { playSample, startSampleSustain, stopSampleSustain } from './sampler.js';
 
 function connectVoice(gainNode) {
   gainNode.connect(getMasterBus());
@@ -616,26 +616,10 @@ export const PITCHED_PLAYERS = {
   violin: playViolin,
 };
 
-/** Instruments that sustain while a key is held (keyboard). */
-export const SUSTAIN_INSTRUMENTS = new Set([
-  'grand',
-  'e-piano',
-  'nylon',
-  'upright',
-  'piano',
-  'guitar',
-  'bass-sub',
-  'bass-growl',
-  'bass-pluck',
-  'bass-finger',
-  'keys-pluck',
-  'keys-pad',
-  'keys-bell',
-  'lead-square',
-  'lead-saw',
-  'strings',
-  'violin',
-]);
+/** Instruments that sustain while a key is held (all sampled sounds do). */
+export const SUSTAIN_INSTRUMENTS = new Set(
+  INSTRUMENTS.filter((i) => i.sustain).map((i) => i.id),
+);
 
 const activeSustains = new Map();
 
@@ -688,16 +672,12 @@ export function startPitchedSustain(instrumentId, pitch, octave, velocity = 0.85
   const resolved = resolveInstrument(instrumentId || 'grand');
   if (resolved.engine === 'sample') {
     const stopSample = startSampleSustain(resolved.id, pitch, octave, velocity);
-    if (stopSample) {
-      const key = `sample|${resolved.id}|${pitch}|${octave}|${Date.now().toString(36)}`;
-      sampleSustains.set(key, stopSample);
-      return key;
-    }
-    const fallback = resolveInstrument(resolved.fallback || 'piano');
-    const id = fallback.id;
-    void id;
+    if (!stopSample) return null; // still loading — stay silent, UI shows state
+    const key = `sample|${resolved.id}|${pitch}|${octave}|${Date.now().toString(36)}`;
+    sampleSustains.set(key, stopSample);
+    return key;
   }
-  const id = resolved.engine === 'sample' ? (resolved.fallback || 'piano') : resolved.id;
+  const id = resolved.id;
   const freq = pitchToFreq(pitch, octave);
   if (!freq) return null;
 
@@ -860,13 +840,13 @@ export function stopAllPitchedSustain() {
 export function playPitchedInstrument(instrumentId, pitch, octave, when, velocity = 0.8) {
   const resolved = resolveInstrument(instrumentId);
   if (resolved.engine === 'sample') {
-    if (playSample(resolved.id, pitch, octave, when, velocity)) return;
-    const fallback = PITCHED_PLAYERS[resolved.fallback] || PITCHED_PLAYERS.guitar;
-    fallback(pitch, octave, when, velocity);
+    // No synth fallback by design: loading instruments are silent and the UI
+    // reports their state. This avoids hearing a fake placeholder voice.
+    playSample(resolved.id, pitch, octave, when, velocity);
     return;
   }
-  const play = PITCHED_PLAYERS[resolved.id] || PITCHED_PLAYERS.guitar;
-  play(pitch, octave, when, velocity);
+  const play = PITCHED_PLAYERS[resolved.id];
+  if (play) play(pitch, octave, when, velocity);
 }
 
 /**

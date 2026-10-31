@@ -6,8 +6,8 @@ import { getAudioContext, ensureAudio } from '../audio/context.js';
 import {
   clampBpm, clamp01, beatsFromTimeSignature, totalSteps,
   stepsPerBar, createEmptyPattern,
-  DEFAULT_VELOCITY, INSTRUMENT_OPTIONS,
-  createChannel, defaultInstrumentForType, instrumentOptionsForType,
+  DEFAULT_VELOCITY,
+  createChannel, defaultInstrumentForType,
   resizePatternSteps, serializeChannel,
 } from '../sequencer/pattern.js';
 import {
@@ -20,7 +20,7 @@ import { playChannelHit } from '../audio/banks.js';
 import { playPercussionVoice, PERCUSSION_BANK } from '../audio/percussion.js';
 import {
   playPitchedInstrument, playPitchedChord, startPitchedSustain, stopPitchedSustain,
-  SUSTAIN_INSTRUMENTS, setStickBendCents, setStickVibrato,
+  setStickBendCents, setStickVibrato,
 } from '../audio/voices.js';
 import { chordEntriesFor, chordNameOptions } from '../theory/chords.js';
 import { loadMbzProject, saveMbzProject, resetMbzProject } from '../state/store.js';
@@ -46,8 +46,15 @@ import {
 import { dispatchCC, refreshKnobUIFromParams } from '../params/dispatch.js';
 import { listParamsByGroup, getParam, PARAM_GROUPS } from '../params/registry.js';
 import { paramToNorm, normToParam } from '../params/scale.js';
-import { INSTRUMENT_CATEGORIES, resolveInstrument } from '../audio/instruments.js';
-import { ensureSample, isSampleReady, onSamplerStatus, preloadDefaults, flushPendingLoads, samplerStatus } from '../audio/sampler.js';
+import {
+  resolveInstrument, instrumentLabel, drumVoiceLabel, DEFAULT_DRUM_KIT_ID,
+} from '../audio/instruments.js';
+import { resolveKitOr, defaultKitForBank } from '../audio/catalog.js';
+import {
+  ensureSample, onSamplerStatus, preloadDefaults, flushPendingLoads,
+  sampleStatus, drumSampleId,
+} from '../audio/sampler.js';
+import { openSoundBrowser, openKitBrowser } from './sound-browser.js';
 
 /** Standalone asset fetch: ./assets next to index.html. */
 function mbzAsset(path) {
@@ -77,6 +84,22 @@ let recordBuffer = [];
 let loopOriginTime = 0;
 let selectedCell = null;
 let keysCurve = 'linear';
+let keysInstrumentId = DEFAULT_KEYS_INSTRUMENT;
+
+const KEYS_INST_STORAGE = 'magicbeatz-keys-inst-v1';
+const KEYS_CURVE_STORAGE = 'magicbeatz-keys-curve-v1';
+function loadKeysInstrumentPref() {
+  try { return localStorage.getItem(KEYS_INST_STORAGE) || ''; } catch { return ''; }
+}
+function saveKeysInstrumentPref(id) {
+  try { if (id) localStorage.setItem(KEYS_INST_STORAGE, id); } catch { /* ignore */ }
+}
+function loadKeysCurvePref() {
+  try { return localStorage.getItem(KEYS_CURVE_STORAGE) || ''; } catch { return ''; }
+}
+function saveKeysCurvePref(curve) {
+  try { if (curve) localStorage.setItem(KEYS_CURVE_STORAGE, curve); } catch { /* ignore */ }
+}
 // Session — clip launcher + arrangement timeline (live looper / song mode).
 let queuedPatternId = null; // clip waiting to start at the next bar boundary
 let songPlayingPatternId = null; // pattern sounding under the current song bar
@@ -128,6 +151,8 @@ const velInput = $('[data-velocity]');
 const velVal = $('[data-velocity-val]');
 const keyboardEl = $('[data-keyboard]');
 const keysInst = $('[data-keys-inst]');
+const kitABtn = $('[data-kit-a]');
+const kitBBtn = $('[data-kit-b]');
 const keysCurveSel = $('[data-keys-curve]');
 const padEditorsEl = $('[data-pad-editors]');
 const midiMonitorEl = $('[data-midi-monitor]');
@@ -363,10 +388,50 @@ function setPlaying(playing) {
 
 function padLabel(entry) {
   if (!entry) return '—';
-  if (entry.target === 'drum') return entry.voiceId || 'drum';
-  if (entry.target === 'note') return `${entry.pitch || 'C'}${entry.octave ?? 4} ${entry.instrumentId || ''}`;
-  return `${entry.chordName || 'C'} chord`;
+  if (entry.target === 'drum') return drumVoiceLabel(entry.voiceId || 'kick');
+  if (entry.target === 'note') return `${entry.pitch || 'C'}${entry.octave ?? 4} · ${instrumentLabel(entry.instrumentId)}`;
+  return `${entry.chordName || 'C'} · ${instrumentLabel(entry.instrumentId)}`;
 }
+
+/** Paint the two bank-kit buttons and their live sample status. */
+function renderPadKits() {
+  for (const [bankId, btn] of [['A', kitABtn], ['B', kitBBtn]]) {
+    if (!btn) continue;
+    const kit = resolveKitOr(padMap.kits?.[bankId] || defaultKitForBank(bankId));
+    const state = sampleStatus(drumSampleId(kit.id)).state;
+    btn.innerHTML = `<span>${bankId} · ${esc(kit.label)}</span><i class="mbz-sound-dot" data-state="${esc(state)}"></i>`;
+    btn.title = `Bank ${bankId} kit: ${kit.label} (${kit.machine}) — click to change`;
+  }
+}
+
+function applyBankKit(bankId, kitId) {
+  const previous = padMap.kits?.[bankId];
+  padMap.kits = { ...(padMap.kits || {}), [bankId]: kitId };
+  // Move tracks that were using the bank's previous kit; custom track kits stay.
+  for (const ch of activePattern()?.channels || []) {
+    if (ch.type === 'percussion' && (!ch.kitId || ch.kitId === previous)) ch.kitId = kitId;
+  }
+  savePadMap(padMap);
+  persist();
+  renderPadKits();
+  renderPads();
+  renderPadEditors();
+  renderGrid();
+}
+
+function chooseBankKit(bankId) {
+  const current = padMap.kits?.[bankId] || defaultKitForBank(bankId);
+  openKitBrowser({
+    selectedId: current,
+    title: `bank ${bankId} drum kit`,
+    onSelect(kitId) {
+      applyBankKit(bankId, kitId);
+    },
+  });
+}
+
+kitABtn?.addEventListener('click', () => chooseBankKit('A'));
+kitBBtn?.addEventListener('click', () => chooseBankKit('B'));
 
 function renderPads() {
   bankLabel.textContent = bank;
@@ -417,7 +482,8 @@ function auditionPad(bankId, padNum, velocity = 0.85) {
   const vel = applyCurve(velocity, entry.curve) * clamp01(entry.gain ?? 0.9);
   if (capturing) recordBuffer.push({ kind: 'pad', bank: bankId, pad: padNum, entry: { ...entry }, t: getAudioContext().currentTime, velocity: vel });
   if (entry.target === 'drum') {
-    playPercussionVoice(entry.voiceId || 'kick', undefined, vel);
+    const kitId = padMap.kits?.[bankId] || defaultKitForBank(bankId);
+    playPercussionVoice(kitId, entry.voiceId || 'kick', undefined, vel);
   } else if (entry.target === 'chord') {
     const entries = chordEntriesFor(entry, chordCtx());
     if (entries.length) playPitchedChord(entry.instrumentId || 'keys-pluck', entries, undefined, vel);
@@ -433,18 +499,16 @@ function auditionKey(pitch, octave, holdId, velocity) {
   if (heldKeys.has(holdId)) return;
   ensureAudio();
   flushPendingLoads();
-  const inst = keysInst.value || 'piano';
+  const inst = keysInstrumentId;
   const vel = applyCurve(velocity ?? 0.85, keysCurve);
   if (capturing) recordBuffer.push({ kind: 'key', pitch, octave, instrumentId: inst, t: getAudioContext().currentTime, velocity: vel });
   const btn = keyboardEl.querySelector(`.mbz-key[data-pitch="${pitch}"][data-octave="${octave}"]`);
   btn?.classList.add('is-down');
-  if (SUSTAIN_INSTRUMENTS.has(inst)) {
-    heldKeys.set(holdId, startPitchedSustain(inst, pitch, octave, vel) || null);
-  } else {
-    playPitchedInstrument(inst, pitch, octave, undefined, vel);
-    // One-shot: track briefly so pointerup can clear highlight, then drop
-    // (prevents heldKeys.has() blocking rapid re-taps = stuck-key fix).
-    heldKeys.set(holdId, null);
+  const sustain = startPitchedSustain(inst, pitch, octave, vel);
+  heldKeys.set(holdId, sustain || null);
+  if (!sustain) {
+    // Still loading (or a one-shot): track briefly so pointerup can clear the
+    // highlight, then drop so rapid re-taps are never blocked.
     window.setTimeout(() => {
       if (heldKeys.get(holdId) === null) {
         heldKeys.delete(holdId);
@@ -660,20 +724,19 @@ function renderTrackPopover(ch, index) {
   pop.className = 'mbz-track-pop';
   const typeOpts = [['percussion', 'drum'], ['note', 'instrument'], ['chord', 'chord']]
     .map(([v, l]) => `<option value="${v}"${ch.type === v ? ' selected' : ''}>${l}</option>`).join('');
-  const voiceOpts = (PERCUSSION_BANK?.voices || [])
-    .map((v) => `<option value="${esc(v.id)}"${v.id === ch.voiceId ? ' selected' : ''}>${esc(v.label)}</option>`).join('');
-  const instOpts = instrumentOptionsForType(ch.type)
-    .map((o) => `<option value="${esc(o.id)}"${o.id === ch.instrumentId ? ' selected' : ''}>${esc(o.label)}</option>`).join('');
+  const kit = resolveKitOr(ch.kitId || DEFAULT_DRUM_KIT_ID);
   const pitchOpts = PITCH_LABELS
     .map((p) => `<option value="${esc(p)}"${p === ch.pitch ? ' selected' : ''}>${esc(p)}</option>`).join('');
   const chordOpts = chordNameOptions(theory.chordsJson, theory.chordsTheory)
     .map((c) => `<option value="${esc(c)}"${c === (ch.chordName || ch.voiceId) ? ' selected' : ''}>${esc(c)}</option>`).join('');
   const scaleOpts = Object.keys(theory.scalesJson || {})
     .map((s) => `<option value="${esc(s)}"${s === ch.scaleKey ? ' selected' : ''}>${esc(s)}</option>`).join('');
-
   const voiceField = ch.type === 'percussion'
-    ? `<label>drum voice<select data-t="voice">${voiceOpts}</select></label>`
-    : `<label>instrument<select data-t="inst">${instOpts}</select></label>`;
+    ? `<div class="mbz-track-pop-grid">
+        <label>kit<button type="button" class="mbz-sound-btn" data-t="kit-open" title="Change this track's drum kit"><span>${esc(kit.label)}</span></button></label>
+        <label>voice<button type="button" class="mbz-sound-btn" data-t="voice-open" title="Choose this track's drum voice"><span>${esc(drumVoiceLabel(ch.voiceId || 'kick'))}</span></button></label>
+      </div>`
+    : `<label>instrument<button type="button" class="mbz-sound-btn" data-t="inst-open" title="Open the sound browser"><span>${esc(instrumentLabel(ch.instrumentId))}</span></button></label>`;
 
   const noteFields = ch.type === 'note'
     ? `<div class="mbz-track-pop-grid">
@@ -723,23 +786,49 @@ function renderTrackPopover(ch, index) {
     if (ch.type === 'percussion') {
       ch.instrumentId = '';
       ch.voiceId = ch.voiceId || PERCUSSION_BANK?.voices?.[0]?.id || 'kick';
+      ch.kitId = ch.kitId || DEFAULT_DRUM_KIT_ID;
     } else {
       ch.voiceId = '';
+      ch.kitId = '';
       ch.instrumentId = ch.instrumentId || defaultInstrumentForType(ch.type);
     }
     commit();
   });
-  q('[data-t="voice"]')?.addEventListener('change', (e) => {
-    ch.voiceId = e.target.value;
-    persist();
+  q('[data-t="voice-open"]')?.addEventListener('click', () => {
+    openSoundBrowser({
+      target: 'drum',
+      kitId: ch.kitId || DEFAULT_DRUM_KIT_ID,
+      selectedId: ch.voiceId || 'kick',
+      title: 'track drum voice',
+      onSelect(id) {
+        ch.voiceId = id;
+        persist();
+        renderGrid();
+      },
+    });
   });
-  q('[data-t="inst"]')?.addEventListener('change', (e) => {
-    ch.instrumentId = e.target.value;
-    const resolved = resolveInstrument(ch.instrumentId);
-    if (resolved.engine === 'sample' && !isSampleReady(resolved.id)) {
-      ensureSample(resolved.id).then(renderKeysInstrumentOptions);
-    }
-    persist();
+  q('[data-t="kit-open"]')?.addEventListener('click', () => {
+    openKitBrowser({
+      selectedId: ch.kitId || DEFAULT_DRUM_KIT_ID,
+      title: 'track drum kit',
+      onSelect(kitId) {
+        ch.kitId = kitId;
+        persist();
+        renderGrid();
+      },
+    });
+  });
+  q('[data-t="inst-open"]')?.addEventListener('click', () => {
+    openSoundBrowser({
+      target: ch.type === 'chord' ? 'chord' : 'note',
+      selectedId: ch.instrumentId,
+      title: 'track instrument',
+      onSelect(id) {
+        ch.instrumentId = resolveInstrument(id).id;
+        persist();
+        renderGrid();
+      },
+    });
   });
   q('[data-t="pitch"]')?.addEventListener('change', (e) => { ch.pitch = e.target.value; persist(); });
   q('[data-t="oct"]')?.addEventListener('change', (e) => {
@@ -779,6 +868,7 @@ function addTrack(kind = 'note') {
     name: uniqueTrackName(pat, type),
     instrumentId: type === 'percussion' ? '' : defaultInstrumentForType(type),
     voiceId: type === 'percussion' ? PERCUSSION_BANK?.voices?.[0]?.id || 'kick' : '',
+    kitId: type === 'percussion' ? (padMap.kits?.[bank] || defaultKitForBank(bank)) : '',
     steps: Array.from({ length: patternStepCount(pat) }, () => null),
   });
   pat.channels.push(ch);
@@ -1416,6 +1506,23 @@ function renderKnobPopoverValues() {
   el.textContent = `${resolved.desc.label}: ${txt}${resolved.stale ? ' · stale (pattern changed)' : ''}`;
 }
 
+function padVoiceField(entry, bankId) {
+  const chordOpts = chordNameOptions(theory.chordsJson, theory.chordsTheory);
+  if (entry.target === 'drum') {
+    const kit = resolveKitOr(padMap.kits?.[bankId] || defaultKitForBank(bankId));
+    return `<label>drum voice<button type="button" class="mbz-sound-btn" data-f="voice" title="Choose a drum voice"><span>${esc(drumVoiceLabel(entry.voiceId || 'kick'))}</span></button></label>
+            <label>kit<button type="button" class="mbz-sound-btn" data-f="kit" title="Choose this bank's drum kit"><span>${esc(kit.label)}</span></button></label>`;
+  }
+  if (entry.target === 'chord') {
+    return `<label>instrument<button type="button" class="mbz-sound-btn" data-f="inst" title="Open the sound browser"><span>${esc(instrumentLabel(entry.instrumentId))}</span></button></label>
+            <label>chord<select data-f="chord">${chordOpts.map((c) => `<option value="${esc(c)}"${c === (entry.chordName || 'C') ? ' selected' : ''}>${esc(c)}</option>`).join('')}</select></label>`;
+  }
+  return `<label>instrument<button type="button" class="mbz-sound-btn" data-f="inst" title="Open the sound browser"><span>${esc(instrumentLabel(entry.instrumentId))}</span></button></label>
+          <label>pitch<select data-f="pitch">${PITCH_LABELS.map((p) => `<option value="${esc(p)}"${p === (entry.pitch || 'C') ? ' selected' : ''}>${esc(p)}</option>`).join('')}</select></label>
+          <label>octave<select data-f="oct">${[1,2,3,4,5].map((o) => `<option value="${o}"${o === (entry.octave ?? 4) ? ' selected' : ''}>${o}</option>`).join('')}</select></label>`;
+}
+
+
 function renderPadEditors() {
   padEditorsEl.innerHTML = '';
   for (const padNum of [1, 2, 3, 4, 5, 6, 7, 8]) {
@@ -1441,7 +1548,7 @@ function renderPadEditors() {
             <option value="note"${entry.target === 'note' ? ' selected' : ''}>note</option>
             <option value="chord"${entry.target === 'chord' ? ' selected' : ''}>chord</option>
           </select></label>
-          <label>voice / pitch<input data-f="voice" value="${esc(entry.voiceId || entry.pitch || '')}"></label>
+          ${padVoiceField(entry, b)}
           <label>midi note<input data-f="midi" type="number" min="0" max="127" value="${entry.midiNote ?? ''}"></label>
           <label>channel (1–16)<input data-f="ch" type="number" min="1" max="16" value="${ch1}"></label>
           <label>curve<select data-f="curve">
@@ -1451,17 +1558,75 @@ function renderPadEditors() {
       card.querySelector('[data-f="target"]').addEventListener('change', (e) => {
         entry.target = e.target.value;
         if (entry.target === 'drum' && !entry.voiceId) entry.voiceId = 'kick';
+        if (entry.target === 'note' && !entry.instrumentId) entry.instrumentId = 'grand';
+        if (entry.target === 'chord' && !entry.instrumentId) entry.instrumentId = 'grand';
+        if (entry.target === 'chord' && !entry.chordName) entry.chordName = 'C';
         savePadMap(padMap);
         renderPads();
         renderPadEditors();
       });
-      card.querySelector('[data-f="voice"]').addEventListener('change', (e) => {
-        const v = e.target.value.trim();
-        if (entry.target === 'drum') entry.voiceId = v || 'kick';
-        else entry.pitch = v || 'C';
-        savePadMap(padMap);
-        renderPads();
+      card.querySelector('[data-f="voice"]')?.addEventListener('click', () => {
+        openSoundBrowser({
+          target: 'drum',
+          kitId: padMap.kits?.[b] || defaultKitForBank(b),
+          selectedId: entry.voiceId || 'kick',
+          title: `${b}${padNum} drum voice`,
+          onSelect(id) {
+            entry.voiceId = id;
+            savePadMap(padMap);
+            renderPads();
+            renderPadEditors();
+          },
+        });
       });
+      card.querySelector('[data-f="kit"]')?.addEventListener('click', () => {
+        openKitBrowser({
+          selectedId: padMap.kits?.[b] || defaultKitForBank(b),
+          title: `bank ${b} drum kit`,
+          onSelect(kitId) {
+            applyBankKit(b, kitId);
+          },
+        });
+      });
+      card.querySelector('[data-f="inst"]')?.addEventListener('click', () => {
+        openSoundBrowser({
+          target: entry.target === 'chord' ? 'chord' : 'note',
+          selectedId: entry.instrumentId,
+          title: `${b}${padNum} instrument`,
+          onSelect(id) {
+            entry.instrumentId = resolveInstrument(id).id;
+            ensureSample(entry.instrumentId);
+            savePadMap(padMap);
+            renderPads();
+            renderPadEditors();
+          },
+        });
+      });
+      const pitchSel = card.querySelector('[data-f="pitch"]');
+      if (pitchSel) {
+        pitchSel.addEventListener('change', (e) => {
+          entry.pitch = e.target.value || 'C';
+          savePadMap(padMap);
+          renderPads();
+        });
+      }
+      const octSel = card.querySelector('[data-f="oct"]');
+      if (octSel) {
+        octSel.addEventListener('change', (e) => {
+          const n = parseInt(e.target.value, 10);
+          if (!Number.isNaN(n)) entry.octave = n;
+          savePadMap(padMap);
+          renderPads();
+        });
+      }
+      const chordSel = card.querySelector('[data-f="chord"]');
+      if (chordSel) {
+        chordSel.addEventListener('change', (e) => {
+          entry.chordName = e.target.value || 'C';
+          savePadMap(padMap);
+          renderPads();
+        });
+      }
       card.querySelector('[data-f="midi"]').addEventListener('change', (e) => {
         const n = parseInt(e.target.value, 10);
         if (!Number.isNaN(n)) entry.midiNote = Math.min(127, Math.max(0, n));
@@ -2092,6 +2257,7 @@ document.querySelector('[data-capture]').addEventListener('click', (e) => {
         if (hit.kind === 'pad' && hit.entry?.target === 'drum') {
           ch = pat.channels.find((c) => c.type === 'percussion' && c.voiceId === hit.entry.voiceId)
             || pat.channels.find((c) => c.type === 'percussion');
+          if (ch) ch.kitId = padMap.kits?.[hit.bank] || ch.kitId || DEFAULT_DRUM_KIT_ID;
         } else if (hit.kind === 'key') {
           ch = pat.channels.find((c) => c.type === 'note' && c.instrumentId === hit.instrumentId) || null;
         }
@@ -2128,7 +2294,10 @@ document.querySelector('[data-grid-reset]').addEventListener('click', () => {
   renderPads();
   updateVelocityUi();
 });
-keysCurveSel.addEventListener('change', () => { keysCurve = keysCurveSel.value; });
+keysCurveSel.addEventListener('change', () => {
+  keysCurve = keysCurveSel.value;
+  saveKeysCurvePref(keysCurve);
+});
 
 // Computer keyboard: A = C at visible base (ported from suite dock map).
 // Digits 1–8 queue clips from the pattern bank (no clash with A–\ note keys).
@@ -2171,27 +2340,31 @@ function syncControlsFromProject() {
   swingVal.textContent = `${Math.round(clamp01(project.swing) * 100)}%`;
   sigSelect.value = `${project.timeSignature[0]}/${project.timeSignature[1]}`;
   barsSelect.value = String(getBars());
-  renderKeysInstrumentOptions();
+  renderKeysInstrumentButton();
   updateProjectNote();
 }
 
-/** Grouped keys dropdown: optgroup per category, sample dot while loading. */
-function renderKeysInstrumentOptions() {
-  const current = keysInst.value || DEFAULT_KEYS_INSTRUMENT;
-  const statuses = samplerStatus();
-  const groups = INSTRUMENT_CATEGORIES.map((cat) => {
-    const opts = INSTRUMENT_OPTIONS
-      .filter((o) => o.category === cat)
-      .map((o) => {
-        const dot = o.engine === 'sample' ? (statuses[o.id] === 'ready' ? ' ●' : ' ○') : '';
-        return `<option value="${esc(o.id)}"${o.id === current ? ' selected' : ''}>${esc(o.label)}${dot}</option>`;
-      }).join('');
-    return opts ? `<optgroup label="${esc(cat)}">${opts}</optgroup>` : '';
-  }).join('');
-  keysInst.innerHTML = groups;
-  if (![...keysInst.options].some((o) => o.value === current)) {
-    keysInst.value = DEFAULT_KEYS_INSTRUMENT;
+/** Paint the keys sound button + live sample state. */
+function renderKeysInstrumentButton() {
+  const resolved = resolveInstrument(keysInstrumentId || DEFAULT_KEYS_INSTRUMENT);
+  keysInstrumentId = resolved.id;
+  const span = keysInst?.querySelector('span');
+  const dot = keysInst?.querySelector('.mbz-sound-dot');
+  const state = sampleStatus(resolved.id).state;
+  if (span) span.textContent = resolved.label;
+  if (dot) dot.dataset.state = state;
+  if (keysInst) {
+    keysInst.dataset.state = state;
+    keysInst.title = `${resolved.label} · ${resolved.category} — click for the sound browser`;
   }
+}
+
+function setKeysInstrument(id) {
+  const resolved = resolveInstrument(id);
+  keysInstrumentId = resolved.id;
+  saveKeysInstrumentPref(keysInstrumentId);
+  renderKeysInstrumentButton();
+  ensureSample(keysInstrumentId).then(renderKeysInstrumentButton);
 }
 
 connectMbzMidi({
@@ -2235,11 +2408,18 @@ if (fwBtn) {
   });
 }
 
+// Restore persisted keys instrument/curve prefs before first render.
+const prefInst = loadKeysInstrumentPref();
+if (prefInst) keysInstrumentId = resolveInstrument(prefInst).id;
+const prefCurve = loadKeysCurvePref();
+if (prefCurve) { keysCurve = prefCurve; keysCurveSel.value = prefCurve; }
+
 syncControlsFromProject();
 renderGrid();
 renderSession();
 renderKeyboard();
 renderPads();
+renderPadKits();
 // Approach B boot: static params first, then dynamics, then knobs.
 registerCoreParams({
   getProject: () => project,
@@ -2256,15 +2436,21 @@ renderPadEditors();
 syncStickUI();
 updateVelocityUi();
 proveAssets();
-// Grand preload is gesture-gated (autoplay policy) — preloadDefaults marks
-// pending until first Play/pad/key tap, then flushPendingLoads() fires it.
-preloadDefaults();
-onSamplerStatus(() => renderKeysInstrumentOptions());
-keysInst.addEventListener('change', () => {
-  const resolved = resolveInstrument(keysInst.value);
-  if (resolved.engine === 'sample' && !isSampleReady(resolved.id)) {
-    ensureSample(resolved.id).then(() => renderKeysInstrumentOptions());
-  }
+// Keys preload is gesture-gated (autoplay policy) — preloadDefaults marks
+// the selected instrument pending until first Play/pad/key tap, then
+// flushPendingLoads() fires it.
+onSamplerStatus(() => {
+  renderKeysInstrumentButton();
+  renderPadKits();
+});
+preloadDefaults(keysInstrumentId);
+keysInst?.addEventListener('click', () => {
+  openSoundBrowser({
+    target: 'note',
+    selectedId: keysInstrumentId,
+    title: 'keys instrument',
+    onSelect: setKeysInstrument,
+  });
 });
 if (imported) projectNote.textContent += ' · imported suite beats';
 

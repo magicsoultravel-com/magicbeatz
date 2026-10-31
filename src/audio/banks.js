@@ -26,7 +26,7 @@ export function playChannelHit(channel, when, velocity, ctx = {}) {
   const instrumentId = channel.instrumentId || (type === 'percussion' ? '' : 'guitar');
 
   if (type === 'percussion') {
-    playPercussionVoice(channel.voiceId || 'kick', when, vel);
+    playPercussionVoice(channel.kitId || '', channel.voiceId || 'kick', when, vel);
     return;
   }
 

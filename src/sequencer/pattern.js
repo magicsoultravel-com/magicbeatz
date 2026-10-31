@@ -1,5 +1,5 @@
 /** Pattern / channel model helpers for magicBeatz. */
-import { instrumentOptions as registryOptions } from '../audio/instruments.js';
+import { instrumentOptions as registryOptions, DEFAULT_DRUM_KIT_ID } from '../audio/instruments.js';
 
 export const STORAGE_KEY = 'guitarsuite-magicbeatz';
 export const STEPS_PER_BEAT = 4;
@@ -58,6 +58,7 @@ export function createChannel(partial = {}) {
     type,
     bankId: partial.bankId || (type === 'percussion' ? 'percussion' : type),
     voiceId: partial.voiceId || '',
+    kitId: partial.kitId || (type === 'percussion' ? DEFAULT_DRUM_KIT_ID : ''),
     instrumentId,
     gain: clamp01(partial.gain ?? DEFAULT_GAIN),
     mute: !!partial.mute,
@@ -88,6 +89,7 @@ export function serializeChannel(ch) {
     type: ch.type,
     bankId: ch.bankId,
     voiceId: ch.voiceId,
+    kitId: ch.kitId || '',
     instrumentId: ch.instrumentId,
     gain: ch.gain,
     mute: ch.mute,

@@ -85,12 +85,20 @@
       <section class="mbz-row mbz-row--perf" aria-label="Pads and keys">
         <div class="mbz-block mbz-pads-block">
           <h2>pads <span class="mbz-hint">Bank <b data-bank-label>A</b> · tap = play · gear = map</span></h2>
+          <div class="mbz-pad-kits" aria-label="Drum kit per pad bank">
+            <button type="button" class="mbz-sound-btn" data-kit-a aria-haspopup="dialog" title="Choose the drum kit for bank A"></button>
+            <button type="button" class="mbz-sound-btn" data-kit-b aria-haspopup="dialog" title="Choose the drum kit for bank B"></button>
+          </div>
           <div class="mbz-pads" data-pads></div>
         </div>
         <div class="mbz-block mbz-keys-block">
           <h2>keys <span class="mbz-hint">25 keys · computer A–\ + MIDI</span></h2>
           <div class="mbz-keys-bar">
-            <label>instrument <select data-keys-inst></select></label>
+            <label>instrument
+              <button type="button" class="mbz-sound-btn" data-keys-inst aria-haspopup="dialog" title="Open the sound browser">
+                <span>splendid grand</span><i class="mbz-sound-dot" data-state="idle"></i>
+              </button>
+            </label>
             <label>curve
               <select data-keys-curve>
                 <option value="linear">linear</option>

@@ -1,26 +1,19 @@
-import { PERCUSSION_PLAYERS } from './voices.js';
+/**
+ * Drum pads — logical voices routed through the selected sampled kit.
+ */
+import { soundsForTarget } from './catalog.js';
+import { playDrumSample } from './sampler.js';
 
 export const PERCUSSION_BANK = {
   id: 'percussion',
   label: 'percussion',
-  voices: [
-    { id: 'kick', label: 'kick' },
-    { id: 'snare', label: 'snare' },
-    { id: 'closed-hat', label: 'closed hat' },
-    { id: 'open-hat', label: 'open hat' },
-    { id: 'clap', label: 'clap' },
-    { id: 'tom', label: 'tom' },
-    { id: 'hi-tom', label: 'hi tom' },
-    { id: 'mid-tom', label: 'mid tom' },
-    { id: 'rim', label: 'rim' },
-    { id: 'cowbell', label: 'cowbell' },
-    { id: 'shaker', label: 'shaker' },
-    { id: 'ride', label: 'ride' },
-    { id: 'crash', label: 'crash' },
-  ],
+  voices: soundsForTarget('drum').map((s) => ({ id: s.id, label: s.label })),
 };
 
-export function playPercussionVoice(voiceId, when, velocity) {
-  const play = PERCUSSION_PLAYERS[voiceId];
-  if (play) play(when, velocity);
+/**
+ * @param {string} kitId sampled drum kit (studio, 808, lo-fi, …)
+ * @param {string} voiceId logical pad voice (kick, snare, closed-hat, …)
+ */
+export function playPercussionVoice(kitId, voiceId, when, velocity) {
+  return playDrumSample(kitId, voiceId, when, velocity);
 }

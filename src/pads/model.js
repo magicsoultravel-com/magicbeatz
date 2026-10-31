@@ -8,60 +8,88 @@
  * Factory presets: pads Ch 10 (index 9), keys Ch 1 (index 0) — presets, not rules.
  */
 import { MBZ_PADMAP_KEY } from '../state/store.js';
+import {
+  defaultKitForBank,
+  kitBankVoices,
+  canonicalDrumVoice,
+  resolveKit,
+  resolveSound,
+  DEFAULT_INSTRUMENT_ID,
+} from '../audio/catalog.js';
 
 export const PAD_ORDER = [5, 6, 7, 8, 1, 2, 3, 4]; // display order: top row then bottom
-export const PAD_SCHEMA = 2;
+export const PAD_SCHEMA = 3;
 export const DEFAULT_PAD_CHANNEL = 9; // Ch 10 zero-based
 export const DEFAULT_KEYS_CHANNEL = 0; // Ch 1 zero-based
 
-const DEFAULT_BANK_A = [
-  { pad: 1, midiNote: 36, target: 'drum', voiceId: 'kick' },
-  { pad: 2, midiNote: 38, target: 'drum', voiceId: 'snare' },
-  { pad: 3, midiNote: 42, target: 'drum', voiceId: 'closed-hat' },
-  { pad: 4, midiNote: 46, target: 'drum', voiceId: 'open-hat' },
-  { pad: 5, midiNote: 39, target: 'drum', voiceId: 'clap' },
-  { pad: 6, midiNote: 43, target: 'drum', voiceId: 'tom' },
-  { pad: 7, midiNote: 47, target: 'drum', voiceId: 'rim' },
-  { pad: 8, midiNote: 45, target: 'drum', voiceId: 'cowbell' },
-];
+/** GM-ish pad notes for each bank; the kit decides the actual sample voice. */
+const BANK_NOTES = {
+  A: [36, 38, 42, 46, 39, 43, 47, 45],
+  B: [48, 50, 51, 49, 52, 53, 55, 57],
+};
 
-const DEFAULT_BANK_B = [
-  { pad: 1, midiNote: 48, target: 'drum', voiceId: 'hi-tom' },
-  { pad: 2, midiNote: 50, target: 'drum', voiceId: 'mid-tom' },
-  { pad: 3, midiNote: 51, target: 'drum', voiceId: 'ride' },
-  { pad: 4, midiNote: 49, target: 'drum', voiceId: 'crash' },
-  { pad: 5, midiNote: 52, target: 'drum', voiceId: 'shaker' },
-  { pad: 6, midiNote: 55, target: 'note', pitch: 'C', octave: 2, instrumentId: 'bass-sub' },
-  { pad: 7, midiNote: 60, target: 'note', pitch: 'C', octave: 4, instrumentId: 'piano' },
-  { pad: 8, midiNote: 64, target: 'chord', chordName: 'C', instrumentId: 'keys-pluck' },
-];
+function defaultBank(bank) {
+  const kitId = defaultKitForBank(bank);
+  const voices = kitBankVoices(kitId, bank);
+  return voices.map((voiceId, i) => ({
+    pad: i + 1,
+    midiNote: BANK_NOTES[bank][i],
+    target: 'drum',
+    voiceId,
+  }));
+}
 
 function withDefaults(entry) {
+  const voiceId = canonicalDrumVoice(entry?.voiceId) || entry?.voiceId || 'kick';
+  const sound = resolveSound(entry?.instrumentId);
+  const instrumentId = sound?.kind === 'pitched' ? sound.id : DEFAULT_INSTRUMENT_ID;
   return {
     curve: 'linear',
     gain: 0.9,
     pitch: 'C',
     octave: 4,
-    instrumentId: 'piano',
+    instrumentId,
     chordName: 'C',
     chordMode: 'named',
     scaleKey: 'Ionian',
     degree: 0,
     midiChannel: DEFAULT_PAD_CHANNEL,
     ...entry,
+    voiceId: entry?.target === 'drum' || !entry?.target ? voiceId : entry?.voiceId,
+    instrumentId,
+    chordName: entry?.chordName || 'C',
+    octave: entry?.octave ?? 4,
+    pitch: entry?.pitch || 'C',
+    chordMode: entry?.chordMode === 'degree' ? 'degree' : 'named',
   };
 }
 
 export function defaultPadMap() {
-  const map = { A: {}, B: {}, keysChannel: DEFAULT_KEYS_CHANNEL };
-  for (const e of DEFAULT_BANK_A) map.A[e.pad] = withDefaults({ ...e, bank: 'A' });
-  for (const e of DEFAULT_BANK_B) map.B[e.pad] = withDefaults({ ...e, bank: 'B' });
+  const map = {
+    A: {},
+    B: {},
+    kits: {
+      A: defaultKitForBank('A'),
+      B: defaultKitForBank('B'),
+    },
+    keysChannel: DEFAULT_KEYS_CHANNEL,
+  };
+  for (const e of defaultBank('A')) map.A[e.pad] = withDefaults({ ...e, bank: 'A' });
+  for (const e of defaultBank('B')) map.B[e.pad] = withDefaults({ ...e, bank: 'B' });
   return map;
 }
 
-/** Explicit v1 -> v2 migration: stamp midiChannel + keysChannel, never leave undefined. */
+/** Explicit migration (v1/v2 -> v3): stamp channel, kit banks and aliases. */
 export function migratePadMap(raw) {
-  const map = { A: {}, B: {}, keysChannel: DEFAULT_KEYS_CHANNEL };
+  const map = {
+    A: {},
+    B: {},
+    kits: {
+      A: resolveKit(raw?.kits?.A)?.id || defaultKitForBank('A'),
+      B: resolveKit(raw?.kits?.B)?.id || defaultKitForBank('B'),
+    },
+    keysChannel: DEFAULT_KEYS_CHANNEL,
+  };
   for (const b of ['A', 'B']) {
     for (const [k, v] of Object.entries(raw?.[b] || {})) {
       map[b][k] = withDefaults({ ...v, midiChannel: v?.midiChannel ?? DEFAULT_PAD_CHANNEL });
@@ -83,10 +111,11 @@ export function loadPadMap() {
     const raw = localStorage.getItem(MBZ_PADMAP_KEY);
     if (raw) {
       const parsed = JSON.parse(raw);
-      if (parsed && parsed.schemaVersion === PAD_SCHEMA && parsed.map?.A && parsed.map?.B) {
+      if (parsed && parsed.schemaVersion === PAD_SCHEMA
+        && parsed.map?.A && parsed.map?.B && parsed.map?.kits) {
         return parsed.map;
       }
-      if (parsed && parsed.schemaVersion === 1 && parsed.map?.A) {
+      if (parsed && parsed.map?.A && parsed.map?.B) {
         const migrated = migratePadMap(parsed.map);
         savePadMap(migrated);
         return migrated;
