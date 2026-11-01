@@ -27,6 +27,8 @@ import {
 } from './pattern.js';
 
 export const MAX_ARRANGE_BARS = 16;
+/** Fresh projects open with the full 16-bar arrangement canvas. */
+export const DEFAULT_ARRANGE_BARS = MAX_ARRANGE_BARS;
 /** Slot resolutions per bar: 1 = bar clip, 2 = half bar, 4 = beat. */
 export const ARRANGE_DIVS = [1, 2, 4];
 export const DEFAULT_ARRANGE_DIV = 4;
@@ -36,6 +38,13 @@ export const MAX_ARRANGE_SLOTS = MAX_ARRANGE_BARS * DEFAULT_ARRANGE_DIV;
 export function normalizeArrangeDiv(value) {
   const n = parseInt(value, 10);
   return ARRANGE_DIVS.includes(n) ? n : DEFAULT_ARRANGE_DIV;
+}
+
+/** Coerce any stored arrangement length (in bars) to a supported value. */
+export function normalizeArrangeBars(value, fallback = DEFAULT_ARRANGE_BARS) {
+  const n = parseInt(value, 10);
+  const bars = Number.isFinite(n) ? n : fallback;
+  return Math.min(MAX_ARRANGE_BARS, Math.max(1, bars));
 }
 
 function slotInt(value, fallback = 0) {
@@ -79,6 +88,21 @@ export function arrangementLengthSlots(arrangement, div = DEFAULT_ARRANGE_DIV) {
 export function arrangementLengthBars(arrangement, div = DEFAULT_ARRANGE_DIV) {
   const d = normalizeArrangeDiv(div);
   return Math.ceil(arrangementLengthSlots(arrangement, d) / d);
+}
+
+/**
+ * Arrangement canvas length in bars.
+ *
+ * `arrangeBars` is the explicit timeline length. Legacy projects without it
+ * migrate to the full 16-bar canvas, while clips that extend past the stored
+ * length still expand it so no painted music is truncated.
+ */
+export function arrangementBars(project) {
+  const div = normalizeArrangeDiv(project?.arrangeDiv);
+  const clipBars = Math.ceil(arrangementLengthSlots(project?.arrangement, div) / div) || 0;
+  const stored = parseInt(project?.arrangeBars, 10);
+  const fallback = Number.isFinite(stored) ? stored : DEFAULT_ARRANGE_BARS;
+  return normalizeArrangeBars(Math.max(fallback, clipBars));
 }
 
 /** Flatten clips → one patternId (or '') per arrangement slot. */
@@ -146,12 +170,11 @@ export function resampleSlots(slots, fromDiv, toDiv, maxBars = MAX_ARRANGE_BARS)
 
 export function ensureArrangementSlots(project, minBars = 1) {
   const d = normalizeArrangeDiv(project.arrangeDiv);
-  const currentLen = Math.max(
-    minBars * d,
-    arrangementLengthSlots(project.arrangement, d),
-    1,
-  );
+  const bars = Math.max(arrangementBars(project), normalizeArrangeBars(minBars, 1));
+  const currentLen = bars * d;
   const slots = arrangementToSlots(project.arrangement, currentLen, d);
+  project.arrangeDiv = d;
+  project.arrangeBars = bars;
   project.arrangement = slotsToArrangement(slots, d);
   return slots;
 }
@@ -253,6 +276,14 @@ export function buildPresetPatterns(timeSignature = [4, 4]) {
     });
   }
 
+  // Fresh projects open on an eight-track starting point; presets remain
+  // available as additional clips. Add/remove tracks freely from here.
+  const starter = createEmptyPattern({
+    name: '8-track template',
+    bars: 1,
+    timeSignature,
+  });
+
   // 16th indices in one bar of 4/4
   const rock = drumPattern('Rock drums', {
     kick: [0, 8],
@@ -312,13 +343,13 @@ export function buildPresetPatterns(timeSignature = [4, 4]) {
     channels: [hat, bass, chords],
   });
 
-  return [rock, funk, ballad, vamp];
+  return [starter, rock, funk, ballad, vamp];
 }
 
 export function createDefaultProject() {
   const timeSignature = [4, 4];
   const patterns = buildPresetPatterns(timeSignature);
-  // Also ensure a blank editable starter at front? Plan says seed presets — use rock as first active
+  // The first preset is the eight-track starter so a fresh project opens editable.
   const active = patterns[0];
   const arrangeDiv = DEFAULT_ARRANGE_DIV;
   return {
@@ -336,6 +367,7 @@ export function createDefaultProject() {
       }, arrangeDiv),
     ],
     arrangeDiv,
+    arrangeBars: DEFAULT_ARRANGE_BARS,
     arrangeLoop: true,
     playMode: 'pattern', // 'pattern' | 'song'
   };
@@ -361,6 +393,7 @@ export function serializeProject(project) {
       lengthSlot: c.lengthSlot,
     })),
     arrangeDiv: normalizeArrangeDiv(project.arrangeDiv),
+    arrangeBars: arrangementBars(project),
     arrangeLoop: !!project.arrangeLoop,
     playMode: project.playMode === 'song' ? 'song' : 'pattern',
   };
@@ -391,6 +424,7 @@ export function migrateV1ToProject(raw) {
       }, arrangeDiv),
     ],
     arrangeDiv,
+    arrangeBars: DEFAULT_ARRANGE_BARS,
     arrangeLoop: true,
     playMode: 'pattern',
   };
@@ -453,6 +487,14 @@ export function parseProject(raw) {
     }, arrangeDiv)];
   }
 
+  // Migration: legacy documents open on the full 16-bar canvas. Explicit
+  // lengths are preserved, and clips beyond the stored end expand it.
+  const arrangeBars = arrangementBars({
+    arrangeDiv,
+    arrangeBars: raw.arrangeBars,
+    arrangement,
+  });
+
   return {
     version: 3,
     bpm,
@@ -462,6 +504,7 @@ export function parseProject(raw) {
     activePatternId,
     arrangement,
     arrangeDiv,
+    arrangeBars,
     arrangeLoop: raw.arrangeLoop !== false,
     playMode: raw.playMode === 'song' ? 'song' : 'pattern',
   };
@@ -512,5 +555,6 @@ export function appendArrangementClip(project, patternId) {
     lengthSlot: Math.min(MAX_ARRANGE_SLOTS - start, pattern.bars * div),
   }, div);
   project.arrangement.push(clip);
+  project.arrangeBars = arrangementBars(project);
   return clip;
 }

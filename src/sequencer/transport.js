@@ -7,6 +7,9 @@ const SCHEDULE_AHEAD_SEC = 0.25;
 /**
  * 16th-note step transport with swing.
  * Prefer getTotalSteps for Song mode; otherwise bars × beats × 16ths.
+ * The transport is deliberately arrangement-agnostic: getTotalSteps() must
+ * return the already-resolved loop length (pattern steps in Live, the full
+ * 16-bar timeline in Song) and onStep resolves each global step.
  *
  * setStep(n): reseat the loop counter — used to restart at step 0 when a
  * queued clip takes over at a bar boundary. Safe to call from onStep.

@@ -73,6 +73,51 @@ export function createChannel(partial = {}) {
   };
 }
 
+/** Patch fields needed to turn a channel into another voice type. */
+export function switchChannelType(channel, nextType) {
+  const type = CHANNEL_TYPES.includes(nextType) ? nextType : 'percussion';
+  const patch = {
+    type,
+    bankId: type === 'percussion' ? 'percussion' : type,
+  };
+  if (type === 'percussion') {
+    patch.instrumentId = '';
+    patch.voiceId = channel.voiceId || 'kick';
+    patch.kitId = channel.kitId || DEFAULT_DRUM_KIT_ID;
+  } else {
+    patch.voiceId = '';
+    patch.kitId = '';
+    patch.instrumentId = channel.instrumentId || defaultInstrumentForType(type);
+    if (type === 'chord' && channel.chordMode !== 'degree') {
+      patch.chordName = channel.chordName || 'C';
+    }
+  }
+  return patch;
+}
+
+/** Eight-track starter layout used by new patterns and fresh projects. */
+export function createTemplateChannels(len = 16) {
+  const steps = () => Array.from({ length: Math.max(1, len) }, () => null);
+  return [
+    createChannel({ type: 'percussion', voiceId: 'kick', name: 'kick', steps: steps() }),
+    createChannel({ type: 'percussion', voiceId: 'snare', name: 'snare', steps: steps() }),
+    createChannel({ type: 'percussion', voiceId: 'closed-hat', name: 'hats', steps: steps() }),
+    createChannel({ type: 'percussion', voiceId: 'open-hat', name: 'open hat', steps: steps() }),
+    createChannel({
+      type: 'note', name: 'bass', instrumentId: 'synth-bass-1', pitch: 'C', octave: 2, steps: steps(),
+    }),
+    createChannel({
+      type: 'chord', name: 'keys', instrumentId: 'rhodes', chordName: 'C', pitch: 'C', octave: 4, steps: steps(),
+    }),
+    createChannel({
+      type: 'note', name: 'lead', instrumentId: 'saw-lead', pitch: 'C', octave: 4, steps: steps(),
+    }),
+    createChannel({
+      type: 'chord', name: 'pad', instrumentId: 'warm-pad', chordName: 'Cmaj7', steps: steps(),
+    }),
+  ];
+}
+
 function normalizeStep(step) {
   if (!step) return null;
   if (typeof step === 'object' && step.velocity != null) {
@@ -104,7 +149,7 @@ export function serializeChannel(ch) {
   };
 }
 
-/** Empty drum-oriented pattern shell (no preset hits). */
+/** New pattern shell: the eight-track starter layout (no preset hits). */
 export function createEmptyPattern(partial = {}) {
   const beatsPerMeasure = Array.isArray(partial.timeSignature)
     ? partial.timeSignature[0]
@@ -117,27 +162,7 @@ export function createEmptyPattern(partial = {}) {
       if (!c.steps.length) c.steps = Array.from({ length: len }, () => null);
       return c;
     })
-    : [
-      createChannel({ type: 'percussion', voiceId: 'kick', name: 'kick', steps: Array.from({ length: len }, () => null) }),
-      createChannel({ type: 'percussion', voiceId: 'snare', name: 'snare', steps: Array.from({ length: len }, () => null) }),
-      createChannel({ type: 'percussion', voiceId: 'closed-hat', name: 'closed hat', steps: Array.from({ length: len }, () => null) }),
-      createChannel({
-        type: 'note',
-        pitch: 'C',
-        octave: 2,
-        instrumentId: 'bass-sub',
-        name: 'bass',
-        steps: Array.from({ length: len }, () => null),
-      }),
-      createChannel({
-        type: 'chord',
-        chordMode: 'degree',
-        degree: 0,
-        instrumentId: 'keys-pluck',
-        name: 'chords',
-        steps: Array.from({ length: len }, () => null),
-      }),
-    ];
+    : createTemplateChannels(len);
 
   return {
     id: partial.id || nextPatternId(),

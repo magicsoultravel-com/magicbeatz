@@ -135,8 +135,8 @@
             </label>
             <span class="mbz-session-spacer"></span>
             <div class="mbz-mode-toggle" role="group" aria-label="Play mode">
-              <button type="button" class="mbz-btn" data-mode-live title="Live looper — clips queue at bar boundaries">live</button>
-              <button type="button" class="mbz-btn" data-mode-song title="Song mode — follows the arrangement timeline">song</button>
+              <button type="button" class="mbz-btn" data-mode-live title="Live looper — clips queue at bar boundaries">Live</button>
+              <button type="button" class="mbz-btn" data-mode-song title="Song mode — follows the full 16-bar arrangement">Song</button>
             </div>
           </div>
 
@@ -181,7 +181,9 @@
 
           <div class="mbz-arrange" aria-label="Arrangement timeline">
             <div class="mbz-arrange-head">
-              <span>arrange <span class="mbz-hint" data-arrange-len>1 bar</span></span>
+              <span>arrange <span class="mbz-hint" data-arrange-len>16 bars</span></span>
+              <span class="mbz-arrange-paint" data-arrange-paint>paint: —</span>
+              <span class="mbz-arrange-pos" data-arrange-pos>bar — / 16</span>
               <span class="mbz-session-spacer"></span>
               <label class="mbz-arrange-loop" title="How many arrangement slots fit in one bar">slots
                 <select data-arrange-div>
@@ -200,7 +202,7 @@
               <div class="mbz-arrange-grid" data-arrange role="grid" aria-label="Arrangement slots"></div>
             </div>
           </div>
-          <p class="mbz-note">paint: click or drag slots with the selected clip · click a filled slot = rest · song mode follows this timeline<span data-launch-hint></span></p>
+          <p class="mbz-note">paint: click or drag slots with the selected clip · click a filled slot = rest · song mode follows all 16 bars<span data-launch-hint></span></p>
         </div>
       </section>
       <section class="mbz-row mbz-row--map" aria-label="Pad mapping">

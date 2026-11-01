@@ -12,8 +12,8 @@ import {
 } from '../sequencer/pattern.js';
 import {
   getActivePattern, arrangementToSlots, slotsToArrangement, resampleSlots,
-  arrangementLengthSlots, resolveArrangementStep, duplicatePattern,
-  MAX_ARRANGE_BARS, MAX_ARRANGE_SLOTS, normalizeArrangeDiv,
+  arrangementBars, resolveArrangementStep, duplicatePattern,
+  MAX_ARRANGE_BARS, normalizeArrangeDiv, normalizeArrangeBars,
 } from '../sequencer/project.js';
 import { createStepTransport } from '../sequencer/transport.js';
 import { playChannelHit } from '../audio/banks.js';
@@ -51,10 +51,11 @@ import {
 } from '../audio/instruments.js';
 import { resolveKitOr, defaultKitForBank } from '../audio/catalog.js';
 import {
-  ensureSample, onSamplerStatus, preloadDefaults, flushPendingLoads,
+  ensureSample, ensureDrumKit, onSamplerStatus, preloadDefaults, flushPendingLoads,
   sampleStatus, drumSampleId,
 } from '../audio/sampler.js';
 import { openSoundBrowser, openKitBrowser } from './sound-browser.js';
+import { openTrackPopover, refreshTrackPopover, closeTrackPopover } from './track-popover.js';
 
 /** Standalone asset fetch: ./assets next to index.html. */
 function mbzAsset(path) {
@@ -176,6 +177,8 @@ const arrangeDelBtn = $('[data-arrange-del]');
 const arrangeClearBtn = $('[data-arrange-clear]');
 const arrangeDivSel = $('[data-arrange-div]');
 const arrangeRulerEl = $('[data-arrange-ruler]');
+const arrangePosEl = $('[data-arrange-pos]');
+const arrangePaintEl = $('[data-arrange-paint]');
 const gridTitleEl = $('[data-grid-title]');
 const gridPanelEl = $('.mbz-grid-panel');
 const trackAddBtn = $('[data-track-add]');
@@ -232,8 +235,7 @@ function arrDiv() { return normalizeArrangeDiv(project.arrangeDiv); }
 function slotSteps() { return Math.max(1, Math.round(stepsPerBar(getBeats()) / arrDiv())); }
 function patternStepCount(pat) { return totalSteps(pat?.bars || 1, getBeats()); }
 function arrangeBarCount() {
-  const d = arrDiv();
-  return Math.max(1, Math.ceil(arrangementLengthSlots(project.arrangement, d) / d));
+  return arrangementBars(project);
 }
 function slotsFromProject() {
   const d = arrDiv();
@@ -243,8 +245,15 @@ let arrangeSlots = slotsFromProject();
 function reloadArrangeSlots() { arrangeSlots = slotsFromProject(); }
 
 function persist() {
-  project.arrangeDiv = arrDiv();
-  project.arrangement = slotsToArrangement(arrangeSlots, project.arrangeDiv);
+  const d = arrDiv();
+  const bars = normalizeArrangeBars(Math.ceil((arrangeSlots.length || d) / d));
+  const targetLen = bars * d;
+  if (arrangeSlots.length !== targetLen) {
+    arrangeSlots = Array.from({ length: targetLen }, (_, i) => arrangeSlots[i] || '');
+  }
+  project.arrangeDiv = d;
+  project.arrangeBars = bars;
+  project.arrangement = slotsToArrangement(arrangeSlots, d);
   saveMbzProject(project);
   updateProjectNote();
 }
@@ -262,8 +271,8 @@ function getBeats() { return beatsFromTimeSignature(project.timeSignature); }
 function getBars() { return Math.min(4, Math.max(1, activePattern()?.bars || 1)); }
 function getTotalSteps() {
   if (project.playMode === 'song') {
-    // Song mode: the whole arrangement timeline is one long loop.
-    return Math.max(1, Math.min(MAX_ARRANGE_SLOTS, arrangeSlots.length || 1)) * slotSteps();
+    // Song mode: the explicit 16-bar canvas is one long loop, including rests.
+    return arrangeBarCount() * slotSteps();
   }
   return patternStepCount(activePattern());
 }
@@ -277,19 +286,58 @@ function schedulePlayhead(when, localStep) {
   }, delay);
 }
 
-/** Timeline playhead: highlight the sounding arrangement slot in song mode. */
-function scheduleArrangePlayhead(when, slotIndex) {
+function updateArrangePosition(text) {
+  if (arrangePosEl) arrangePosEl.textContent = text;
+}
+
+/** Keep the active slot visible while the playhead travels across 16 bars. */
+function ensureArrangeSlotVisible(cell) {
+  const scroller = arrangeEl?.closest('.mbz-arrange-scroll');
+  if (!scroller || !cell) return;
+  const cellRect = cell.getBoundingClientRect();
+  const viewRect = scroller.getBoundingClientRect();
+  const pad = 24;
+  if (cellRect.left < viewRect.left + pad) {
+    scroller.scrollLeft -= viewRect.left + pad - cellRect.left;
+  } else if (cellRect.right > viewRect.right - pad) {
+    scroller.scrollLeft += cellRect.right - viewRect.right + pad;
+  }
+}
+
+/** Timeline playhead: highlight the sounding slot and advance within it every step. */
+function scheduleArrangePlayhead(when, slotIndex, stepInSlot = 0) {
   const delay = Math.max(0, (when - getAudioContext().currentTime) * 1000 - 8);
   window.setTimeout(() => {
     if (!playbackUiActive || project.playMode !== 'song') return;
     arrangeEl?.querySelectorAll('.mbz-slot.is-playhead').forEach((c) => c.classList.remove('is-playhead'));
-    arrangeEl?.querySelector(`.mbz-slot[data-slot="${slotIndex}"]`)?.classList.add('is-playhead');
+    const cell = arrangeEl?.querySelector(`.mbz-slot[data-slot="${slotIndex}"]`);
+    if (!cell) {
+      arrangeEl?.classList.remove('has-playhead');
+      return;
+    }
+    cell.classList.add('is-playhead');
+    arrangeEl.classList.add('has-playhead');
+    // Move through the slot on each transport step (16ths at 4/bar).
+    const steps = slotSteps();
+    const fraction = steps > 1 ? Math.min(1, (stepInSlot + 1) / steps) : 1;
+    arrangeEl.style.setProperty(
+      '--playhead-x',
+      `${cell.offsetLeft + cell.offsetWidth * fraction}px`,
+    );
+    const d = arrDiv();
+    const bar = Math.floor(slotIndex / d) + 1;
+    const slot = (slotIndex % d) + 1;
+    updateArrangePosition(`bar ${bar} / ${arrangeBarCount()} · slot ${slot} / ${d}`);
+    ensureArrangeSlotVisible(cell);
   }, delay);
 }
 
 function clearPlayheads() {
   gridEl.querySelectorAll('.mbz-cell.is-playhead').forEach((c) => c.classList.remove('is-playhead'));
   arrangeEl?.querySelectorAll('.mbz-slot.is-playhead').forEach((c) => c.classList.remove('is-playhead'));
+  arrangeEl?.classList.remove('has-playhead');
+  arrangeEl?.style.removeProperty('--playhead-x');
+  updateArrangePosition(`bar — / ${arrangeBarCount()}`);
 }
 
 /** Schedule a grid playhead clear (used when the sounding pattern ≠ edit view). */
@@ -324,9 +372,11 @@ function playPatternChannels(pat, idx, when) {
 
 /** Song mode: the arrangement timeline owns the loop; clips pick the voice. */
 function onSongStep(stepIndex, total, when) {
-  const resolved = resolveArrangementStep(project, stepIndex, arrangeSlots.length);
+  const totalSlots = arrangeBarCount() * arrDiv();
+  const resolved = resolveArrangementStep(project, stepIndex, totalSlots);
   const slotIndex = resolved ? resolved.slotIndex : Math.floor(stepIndex / slotSteps());
-  scheduleArrangePlayhead(when, slotIndex);
+  const stepInSlot = resolved ? resolved.stepInSlot : stepIndex % slotSteps();
+  scheduleArrangePlayhead(when, slotIndex, stepInSlot);
   if (resolved) {
     if (resolved.pattern.id !== songPlayingPatternId) {
       songPlayingPatternId = resolved.pattern.id;
@@ -594,12 +644,36 @@ function trackName(ch) {
   return ch.name || ch.voiceId || ch.instrumentId || ch.type || 'track';
 }
 
+/** Keep a row's name / mute / solo controls in sync without rerendering. */
+function syncTrackRow(ch) {
+  if (!ch) return;
+  const row = gridEl.querySelector(`.mbz-ch-row[data-channel-id="${CSS.escape(ch.id)}"]`);
+  if (!row) return;
+  const name = row.querySelector('.mbz-ch-name');
+  if (name) {
+    name.textContent = trackName(ch);
+    name.title = `${trackName(ch)} · click to edit this track`;
+    name.classList.toggle('is-open', trackPopoverId === ch.id);
+    name.setAttribute('aria-expanded', String(trackPopoverId === ch.id));
+  }
+  const mute = row.querySelector('[data-flag="mute"]');
+  if (mute) {
+    mute.classList.toggle('is-on', !!ch.mute);
+    mute.setAttribute('aria-pressed', String(!!ch.mute));
+    mute.title = ch.mute ? 'muted — click to unmute' : 'mute this track';
+  }
+  const solo = row.querySelector('[data-flag="solo"]');
+  if (solo) {
+    solo.classList.toggle('is-on', !!ch.solo);
+    solo.setAttribute('aria-pressed', String(!!ch.solo));
+    solo.title = ch.solo ? 'soloed — click to unsolo' : 'solo this track';
+  }
+}
+
 function renderGrid() {
   const pat = activePattern();
+  closeTrackPopover({ notify: false });
   gridEl.innerHTML = '';
-  // The track editor lives outside the scrolling grid, so it must be cleared
-  // explicitly whenever the grid re-renders.
-  gridPanelEl?.querySelectorAll('.mbz-track-pop').forEach((el) => el.remove());
   if (!pat) return;
   const n = patternStepCount(pat);
   gridEl.style.setProperty('--steps', String(n));
@@ -614,6 +688,7 @@ function renderGrid() {
     }
     const row = document.createElement('div');
     row.className = 'mbz-ch-row';
+    row.dataset.channelId = ch.id;
     row.style.setProperty('--steps', String(n));
 
     const head = document.createElement('div');
@@ -624,6 +699,9 @@ function renderGrid() {
     name.className = 'mbz-ch-name';
     name.textContent = trackName(ch);
     name.title = `${trackName(ch)} · click to edit this track`;
+    name.classList.toggle('is-open', trackPopoverId === ch.id);
+    name.setAttribute('aria-haspopup', 'dialog');
+    name.setAttribute('aria-controls', `mbz-track-pop-${ch.id}`);
     name.setAttribute('aria-expanded', String(trackPopoverId === ch.id));
     name.addEventListener('click', () => {
       trackPopoverId = trackPopoverId === ch.id ? null : ch.id;
@@ -634,6 +712,7 @@ function renderGrid() {
     const mute = document.createElement('button');
     mute.type = 'button';
     mute.className = `mbz-ch-flag${ch.mute ? ' is-on' : ''}`;
+    mute.dataset.flag = 'mute';
     mute.textContent = 'M';
     mute.title = ch.mute ? 'muted — click to unmute' : 'mute this track';
     mute.setAttribute('aria-pressed', String(!!ch.mute));
@@ -644,12 +723,14 @@ function renderGrid() {
       mute.setAttribute('aria-pressed', String(!!ch.mute));
       mute.title = ch.mute ? 'muted — click to unmute' : 'mute this track';
       persist();
+      if (trackPopoverId === ch.id) refreshTrackPopover();
     });
     head.appendChild(mute);
 
     const solo = document.createElement('button');
     solo.type = 'button';
     solo.className = `mbz-ch-flag is-solo${ch.solo ? ' is-on' : ''}`;
+    solo.dataset.flag = 'solo';
     solo.textContent = 'S';
     solo.title = ch.solo ? 'soloed — click to unsolo' : 'solo this track';
     solo.setAttribute('aria-pressed', String(!!ch.solo));
@@ -660,6 +741,7 @@ function renderGrid() {
       solo.setAttribute('aria-pressed', String(!!ch.solo));
       solo.title = ch.solo ? 'soloed — click to unsolo' : 'solo this track';
       persist();
+      if (trackPopoverId === ch.id) refreshTrackPopover();
     });
     head.appendChild(solo);
 
@@ -698,103 +780,63 @@ function renderGrid() {
     gridEl.appendChild(row);
   });
   if (popoverAnchor && popoverIndex >= 0) {
-    positionTrackPopover(renderTrackPopover(pat.channels[popoverIndex], popoverIndex), popoverAnchor);
+    openTrackEditor(pat.channels[popoverIndex], popoverIndex, popoverAnchor, pat.channels.length);
+  } else if (trackPopoverId) {
+    trackPopoverId = null;
   }
 }
 
-/** Mount the track editor outside the scrolling grid so it never gets clipped. */
-function positionTrackPopover(pop, anchor) {
-  const rect = anchor.getBoundingClientRect();
-  if (!gridPanelEl) {
-    pop.style.position = 'fixed';
-    pop.style.top = `${rect.bottom + 4}px`;
-    pop.style.left = `${Math.max(8, rect.left)}px`;
-    document.body.appendChild(pop);
-    return;
-  }
-  const host = gridPanelEl.getBoundingClientRect();
-  pop.style.top = `${Math.max(0, rect.bottom - host.top + 4)}px`;
-  pop.style.left = `${Math.max(0, Math.min(rect.left - host.left, host.width - 244))}px`;
-  gridPanelEl.appendChild(pop);
+/** Open the full anchored track inspector for one channel row. */
+function openTrackEditor(ch, index, anchor, total) {
+  const pat = activePattern();
+  if (!pat || !ch || !anchor) return;
+  openTrackPopover({
+    channel: ch,
+    index,
+    total: total ?? pat.channels.length,
+    patternName: pat.name,
+    anchor,
+    host: gridPanelEl || document.body,
+    chordNames: chordNameOptions(theory.chordsJson, theory.chordsTheory),
+    scaleKeys: Object.keys(theory.scalesJson || {}),
+    onChange: handleTrackChange,
+    onBrowseSound: browseTrackSound,
+    onBrowseKit: browseTrackKit,
+    onAudition: auditionTrack,
+    onMove: (delta) => moveTrack(ch.id, delta),
+    onDuplicate: () => duplicateTrack(ch.id),
+    onClearSteps: () => clearTrackSteps(ch.id),
+    onDelete: () => deleteTrack(ch.id),
+    onClose: () => {
+      if (trackPopoverId !== ch.id) return;
+      trackPopoverId = null;
+      syncTrackRow(ch);
+    },
+  });
 }
 
-/** Inline track editor, anchored under the row name. */
-function renderTrackPopover(ch, index) {
-  const pop = document.createElement('div');
-  pop.className = 'mbz-track-pop';
-  const typeOpts = [['percussion', 'drum'], ['note', 'instrument'], ['chord', 'chord']]
-    .map(([v, l]) => `<option value="${v}"${ch.type === v ? ' selected' : ''}>${l}</option>`).join('');
-  const kit = resolveKitOr(ch.kitId || DEFAULT_DRUM_KIT_ID);
-  const pitchOpts = PITCH_LABELS
-    .map((p) => `<option value="${esc(p)}"${p === ch.pitch ? ' selected' : ''}>${esc(p)}</option>`).join('');
-  const chordOpts = chordNameOptions(theory.chordsJson, theory.chordsTheory)
-    .map((c) => `<option value="${esc(c)}"${c === (ch.chordName || ch.voiceId) ? ' selected' : ''}>${esc(c)}</option>`).join('');
-  const scaleOpts = Object.keys(theory.scalesJson || {})
-    .map((s) => `<option value="${esc(s)}"${s === ch.scaleKey ? ' selected' : ''}>${esc(s)}</option>`).join('');
-  const voiceField = ch.type === 'percussion'
-    ? `<div class="mbz-track-pop-grid">
-        <label>kit<button type="button" class="mbz-sound-btn" data-t="kit-open" title="Change this track's drum kit"><span>${esc(kit.label)}</span></button></label>
-        <label>voice<button type="button" class="mbz-sound-btn" data-t="voice-open" title="Choose this track's drum voice"><span>${esc(drumVoiceLabel(ch.voiceId || 'kick'))}</span></button></label>
-      </div>`
-    : `<label>instrument<button type="button" class="mbz-sound-btn" data-t="inst-open" title="Open the sound browser"><span>${esc(instrumentLabel(ch.instrumentId))}</span></button></label>`;
+/** Persist inspector edits and keep the matching row in sync. */
+function handleTrackChange(ch, opts = {}) {
+  persist();
+  syncTrackRow(ch);
+  if (opts.gain) refreshKnobUIFromParams(knobMap, activePattern, paintKnobArc);
+  if (opts.name || opts.type) {
+    syncParamRegistry();
+    renderKnobs();
+  }
+}
 
-  const noteFields = ch.type === 'note'
-    ? `<div class="mbz-track-pop-grid">
-        <label>pitch<select data-t="pitch">${pitchOpts}</select></label>
-        <label>octave<input data-t="oct" type="number" min="0" max="8" value="${ch.octave ?? 4}"></label>
-      </div>`
-    : '';
+/** Focus a control in the (possibly rebuilt) inspector after a sound pick. */
+function focusTrackPopoverControl(selector) {
+  const el = document.querySelector(`.mbz-track-pop ${selector}`);
+  if (!el) return false;
+  el.focus({ preventScroll: true });
+  return document.activeElement === el;
+}
 
-  const chordFields = ch.type === 'chord'
-    ? `<div class="mbz-track-pop-grid">
-        <label>mode<select data-t="chordMode">
-          <option value="named"${ch.chordMode !== 'degree' ? ' selected' : ''}>named</option>
-          <option value="degree"${ch.chordMode === 'degree' ? ' selected' : ''}>degree</option>
-        </select></label>
-        ${ch.chordMode === 'degree'
-          ? `<label>degree<input data-t="degree" type="number" min="0" max="6" value="${ch.degree ?? 0}"></label>`
-          : `<label>chord<select data-t="chordName">${chordOpts}</select></label>`}
-      </div>
-      ${ch.chordMode === 'degree' ? `<label>scale<select data-t="scaleKey">${scaleOpts}</select></label>` : ''}`
-    : '';
-
-  pop.innerHTML = `<h4>${esc(trackName(ch))}<span>row ${index + 1} · ${esc(ch.type)}</span></h4>
-    <label>name<input data-t="name" type="text" maxlength="18" value="${esc(ch.name || '')}" placeholder="${esc(trackName(ch))}"></label>
-    <label>type<select data-t="type">${typeOpts}</select></label>
-    ${voiceField}
-    ${noteFields}
-    ${chordFields}
-    <label>gain <input data-t="gain" type="range" min="0" max="100" value="${Math.round(clamp01(ch.gain ?? 0.8) * 100)}"></label>
-    <div class="mbz-track-pop-row">
-      <button type="button" class="mbz-btn" data-t="up"${index === 0 ? ' disabled' : ''} title="Move track up">↑</button>
-      <button type="button" class="mbz-btn" data-t="down"${index >= activePattern().channels.length - 1 ? ' disabled' : ''} title="Move track down">↓</button>
-      <button type="button" class="mbz-btn" data-t="dup" title="Duplicate track">dup</button>
-      <button type="button" class="mbz-btn" data-t="del"${activePattern().channels.length <= 1 ? ' disabled' : ''} title="Delete track">del</button>
-    </div>`;
-
-  const q = (sel) => pop.querySelector(sel);
-  const commit = () => { persist(); refreshPatternViews(); };
-
-  q('[data-t="name"]').addEventListener('change', (e) => {
-    ch.name = String(e.target.value || '').trim().slice(0, 18);
-    commit();
-  });
-  q('[data-t="type"]').addEventListener('change', (e) => {
-    const next = e.target.value;
-    ch.type = next === 'chord' || next === 'note' ? next : 'percussion';
-    ch.bankId = ch.type === 'percussion' ? 'percussion' : ch.type;
-    if (ch.type === 'percussion') {
-      ch.instrumentId = '';
-      ch.voiceId = ch.voiceId || PERCUSSION_BANK?.voices?.[0]?.id || 'kick';
-      ch.kitId = ch.kitId || DEFAULT_DRUM_KIT_ID;
-    } else {
-      ch.voiceId = '';
-      ch.kitId = '';
-      ch.instrumentId = ch.instrumentId || defaultInstrumentForType(ch.type);
-    }
-    commit();
-  });
-  q('[data-t="voice-open"]')?.addEventListener('click', () => {
+function browseTrackSound({ channel: ch, target }) {
+  if (!ch) return;
+  if (target === 'drum') {
     openSoundBrowser({
       target: 'drum',
       kitId: ch.kitId || DEFAULT_DRUM_KIT_ID,
@@ -803,59 +845,91 @@ function renderTrackPopover(ch, index) {
       onSelect(id) {
         ch.voiceId = id;
         persist();
-        renderGrid();
+        syncTrackRow(ch);
+        if (!ch.name) {
+          syncParamRegistry();
+          renderKnobs();
+        }
+        refreshTrackPopover({ focusSelector: '[data-tp="voice-open"]' });
       },
+      returnFocus: () => focusTrackPopoverControl('[data-tp="voice-open"]'),
     });
+    return;
+  }
+  openSoundBrowser({
+    target,
+    selectedId: ch.instrumentId,
+    title: target === 'chord' ? 'track chord instrument' : 'track instrument',
+    onSelect(id) {
+      ch.instrumentId = resolveInstrument(id).id;
+      persist();
+      syncTrackRow(ch);
+      refreshTrackPopover({ focusSelector: '[data-tp="inst-open"]' });
+    },
+    returnFocus: () => focusTrackPopoverControl('[data-tp="inst-open"]'),
   });
-  q('[data-t="kit-open"]')?.addEventListener('click', () => {
-    openKitBrowser({
-      selectedId: ch.kitId || DEFAULT_DRUM_KIT_ID,
-      title: 'track drum kit',
-      onSelect(kitId) {
-        ch.kitId = kitId;
-        persist();
-        renderGrid();
-      },
-    });
-  });
-  q('[data-t="inst-open"]')?.addEventListener('click', () => {
-    openSoundBrowser({
-      target: ch.type === 'chord' ? 'chord' : 'note',
-      selectedId: ch.instrumentId,
-      title: 'track instrument',
-      onSelect(id) {
-        ch.instrumentId = resolveInstrument(id).id;
-        persist();
-        renderGrid();
-      },
-    });
-  });
-  q('[data-t="pitch"]')?.addEventListener('change', (e) => { ch.pitch = e.target.value; persist(); });
-  q('[data-t="oct"]')?.addEventListener('change', (e) => {
-    ch.octave = Math.min(8, Math.max(0, parseInt(e.target.value, 10) || 0));
-    persist();
-  });
-  q('[data-t="chordMode"]')?.addEventListener('change', (e) => {
-    ch.chordMode = e.target.value === 'degree' ? 'degree' : 'named';
-    commit();
-  });
-  q('[data-t="chordName"]')?.addEventListener('change', (e) => { ch.chordName = e.target.value; persist(); });
-  q('[data-t="scaleKey"]')?.addEventListener('change', (e) => { ch.scaleKey = e.target.value; persist(); });
-  q('[data-t="degree"]')?.addEventListener('change', (e) => {
-    ch.degree = Math.min(6, Math.max(0, parseInt(e.target.value, 10) || 0));
-    persist();
-  });
-  q('[data-t="gain"]').addEventListener('input', (e) => {
-    ch.gain = clamp01(parseInt(e.target.value, 10) / 100);
-    persist();
-    refreshKnobUIFromParams(knobMap, activePattern, paintKnobArc);
-  });
-  q('[data-t="up"]').addEventListener('click', () => moveTrack(ch.id, -1));
-  q('[data-t="down"]').addEventListener('click', () => moveTrack(ch.id, 1));
-  q('[data-t="dup"]').addEventListener('click', () => duplicateTrack(ch.id));
-  q('[data-t="del"]').addEventListener('click', () => deleteTrack(ch.id));
+}
 
-  return pop;
+function browseTrackKit(ch) {
+  if (!ch) return;
+  openKitBrowser({
+    selectedId: ch.kitId || DEFAULT_DRUM_KIT_ID,
+    title: 'track drum kit',
+    onSelect(kitId) {
+      ch.kitId = kitId;
+      persist();
+      syncTrackRow(ch);
+      refreshTrackPopover({ focusSelector: '[data-tp="kit-open"]' });
+    },
+    returnFocus: () => focusTrackPopoverControl('[data-tp="kit-open"]'),
+  });
+}
+
+/** Preview the exact sound this track will play. */
+function auditionTrack(ch) {
+  if (!ch) return;
+  ensureAudio();
+  flushPendingLoads();
+  const when = () => getAudioContext().currentTime + 0.03;
+  if (ch.type === 'percussion') {
+    const kitId = ch.kitId || DEFAULT_DRUM_KIT_ID;
+    ensureDrumKit(kitId)
+      .then((inst) => {
+        if (inst) playPercussionVoice(kitId, ch.voiceId || 'kick', when(), 0.9);
+      })
+      .catch(() => {});
+    return;
+  }
+  const instrument = resolveInstrument(ch.instrumentId);
+  const instrumentId = instrument.id;
+  const play = () => {
+    if (ch.type === 'chord') {
+      const entries = chordEntriesFor(ch, chordCtx());
+      if (entries.length) playPitchedChord(instrumentId, entries, when(), 0.85);
+      else playPitchedInstrument(instrumentId, ch.pitch || 'C', ch.octave ?? 4, when(), 0.85);
+    } else {
+      playPitchedInstrument(instrumentId, ch.pitch || 'C', ch.octave ?? 4, when(), 0.85);
+    }
+  };
+  if (instrument.engine !== 'sample') {
+    play();
+    return;
+  }
+  ensureSample(instrumentId)
+    .then((inst) => {
+      if (inst) play();
+    })
+    .catch(() => {});
+}
+
+function clearTrackSteps(channelId) {
+  const ch = findChannel(channelId);
+  if (!ch) return;
+  ch.steps = ch.steps.map(() => null);
+  if (selectedCell?.channelId === channelId) selectedCell = null;
+  persist();
+  renderGrid();
+  updateVelocityUi();
 }
 
 /** Append a track to the active clip and open its editor. */
@@ -869,6 +943,7 @@ function addTrack(kind = 'note') {
     instrumentId: type === 'percussion' ? '' : defaultInstrumentForType(type),
     voiceId: type === 'percussion' ? PERCUSSION_BANK?.voices?.[0]?.id || 'kick' : '',
     kitId: type === 'percussion' ? (padMap.kits?.[bank] || defaultKitForBank(bank)) : '',
+    chordName: type === 'chord' ? 'C' : '',
     steps: Array.from({ length: patternStepCount(pat) }, () => null),
   });
   pat.channels.push(ch);
@@ -909,7 +984,7 @@ function duplicateTrack(channelId) {
   const copy = createChannel({
     ...serializeChannel(src),
     id: undefined,
-    name: `${trackName(src)} copy`,
+    name: `${trackName(src)} copy`.slice(0, 24),
   });
   pat.channels.splice(idx + 1, 0, copy);
   trackPopoverId = copy.id;
@@ -982,6 +1057,7 @@ function setActivePattern(patternId, opts = {}) {
   if (project.activePatternId !== patternId) {
     project.activePatternId = patternId;
     selectedCell = null;
+    trackPopoverId = null;
   }
   arrangeSlots = slotsFromProject();
   persist();
@@ -1123,16 +1199,30 @@ function paintSlotCell(cell, index) {
   const d = arrDiv();
   const id = arrangeSlots[index] || '';
   const p = id ? project.patterns.find((x) => x.id === id) : null;
+  const bar = Math.floor(index / d) + 1;
+  const sub = (index % d) + 1;
   cell.className = slotCellClasses(index, id);
   cell.dataset.slot = String(index);
   if (p) {
+    const isTarget = id === project.activePatternId;
+    const activeName = activePattern()?.name || '?';
     cell.style.setProperty('--clip', clipColor(project.patterns.indexOf(p)));
     cell.textContent = shortPatternLabel(p.name);
-    cell.title = `bar ${Math.floor(index / d) + 1}.${(index % d) + 1} · ${p.name} · click = rest`;
+    cell.title = isTarget
+      ? `bar ${bar}.${sub} · ${p.name} · click = rest`
+      : `bar ${bar}.${sub} · ${p.name} · click = paint ${activeName}`;
+    cell.setAttribute(
+      'aria-label',
+      isTarget
+        ? `bar ${bar} slot ${sub}, ${p.name}, click to clear`
+        : `bar ${bar} slot ${sub}, ${p.name}, click to replace with ${activeName}`,
+    );
   } else {
+    const activeName = activePattern()?.name || '?';
     cell.style.removeProperty('--clip');
     cell.textContent = '';
-    cell.title = `bar ${Math.floor(index / d) + 1}.${(index % d) + 1} · rest · click = paint ${activePattern()?.name || '?'}`;
+    cell.title = `bar ${bar}.${sub} · rest · click = paint ${activeName}`;
+    cell.setAttribute('aria-label', `bar ${bar} slot ${sub}, rest, click to paint ${activeName}`);
   }
 }
 
@@ -1153,7 +1243,7 @@ function renderArrangeRuler(len) {
 function renderArrange() {
   if (!arrangeEl) return;
   const d = arrDiv();
-  const len = Math.max(d, Math.min(MAX_ARRANGE_BARS * d, arrangeSlots.length || d));
+  const len = Math.max(d, Math.min(MAX_ARRANGE_BARS * d, arrangeSlots.length || arrangeBarCount() * d));
   arrangeEl.style.setProperty('--slots', String(len));
   arrangeEl.innerHTML = '';
   for (let i = 0; i < len; i += 1) {
@@ -1175,6 +1265,10 @@ function renderArrange() {
   renderArrangeRuler(len);
   const bars = Math.max(1, Math.round(len / d));
   if (arrangeLenEl) arrangeLenEl.textContent = `${bars} bar${bars === 1 ? '' : 's'} · ${len} slot${len === 1 ? '' : 's'}`;
+  if (arrangePaintEl) arrangePaintEl.textContent = `paint: ${activePattern()?.name || '?'}`;
+  if (arrangePosEl && !arrangeEl.classList.contains('has-playhead')) {
+    updateArrangePosition(`bar — / ${bars}`);
+  }
   if (arrangeAddBtn) arrangeAddBtn.disabled = len >= MAX_ARRANGE_BARS * d;
   if (arrangeDelBtn) arrangeDelBtn.disabled = len <= d;
   if (arrangeClearBtn) arrangeClearBtn.disabled = !arrangeSlots.some(Boolean);
@@ -1208,9 +1302,30 @@ function startArrangePaint(e, index) {
   const value = (arrangeSlots[index] || '') === target ? '' : target;
   arrangePaint = { value, visited: new Set([index]) };
   paintSlotValue(index, value);
+  arrangeEl?.classList.add('is-painting');
+
+  const scroller = arrangeEl?.closest('.mbz-arrange-scroll');
+  // Dragging against an edge scrolls the timeline while continuing the paint.
+  const trackPaint = (ev) => {
+    if (!arrangePaint) return;
+    if (scroller) {
+      const rect = scroller.getBoundingClientRect();
+      const pad = 24;
+      if (ev.clientX < rect.left + pad) scroller.scrollLeft -= 18;
+      else if (ev.clientX > rect.right - pad) scroller.scrollLeft += 18;
+    }
+    const hit = document.elementFromPoint(ev.clientX, ev.clientY)?.closest?.('.mbz-slot');
+    if (hit && arrangeEl?.contains(hit)) {
+      const index = Number(hit.dataset.slot);
+      if (Number.isFinite(index)) extendArrangePaint(index);
+    }
+  };
+
   const end = () => {
     window.removeEventListener('pointerup', end);
     window.removeEventListener('pointercancel', end);
+    window.removeEventListener('pointermove', trackPaint);
+    arrangeEl?.classList.remove('is-painting');
     if (!arrangePaint) return;
     arrangePaint = null;
     persist();
@@ -1218,6 +1333,7 @@ function startArrangePaint(e, index) {
   };
   window.addEventListener('pointerup', end);
   window.addEventListener('pointercancel', end);
+  window.addEventListener('pointermove', trackPaint);
 }
 
 function extendArrangePaint(index) {
@@ -1251,6 +1367,7 @@ function setPlayMode(mode) {
   project.playMode = next;
   queuedPatternId = null;
   songPlayingPatternId = null;
+  clearPlayheads();
   arrangeSlots = slotsFromProject();
   persist();
   renderSession();
@@ -1281,6 +1398,7 @@ function addPattern() {
   project.patterns.push(pat);
   project.activePatternId = pat.id;
   selectedCell = null;
+  trackPopoverId = null;
   refreshPatternViews();
   startRename(pat.id);
 }
@@ -1293,6 +1411,7 @@ function duplicateActivePattern() {
   project.patterns.splice(idx + 1, 0, copy);
   project.activePatternId = copy.id;
   selectedCell = null;
+  trackPopoverId = null;
   refreshPatternViews();
   startRename(copy.id);
 }
@@ -1305,6 +1424,7 @@ function deleteActivePattern() {
   if (queuedPatternId === id) queuedPatternId = null;
   arrangeSlots = arrangeSlots.map((s) => (s === id ? '' : s));
   selectedCell = null;
+  trackPopoverId = null;
   refreshPatternViews();
 }
 
@@ -2160,8 +2280,8 @@ document.addEventListener('pointerdown', (e) => {
   if (!trackPopoverId) return;
   if (e.target.closest?.('.mbz-track-pop')) return;
   if (e.target.closest?.('.mbz-ch-name')) return; // the name button toggles itself
-  trackPopoverId = null;
-  renderGrid();
+  if (e.target.closest?.('.mbz-browser') || document.body.classList.contains('mbz-browser-open')) return;
+  closeTrackPopover();
 }, true);
 
 /** FX strip: sliders are views on the same params knobs write to. */

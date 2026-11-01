@@ -63,13 +63,21 @@ function statusClass(id) {
 
 function closeBrowser() {
   if (!active) return;
-  const { overlay, previousFocus } = active;
+  const { overlay, previousFocus, returnFocus } = active;
   overlay.remove();
   document.body.classList.remove('mbz-browser-open');
   if (statusUnsub) statusUnsub();
   statusUnsub = null;
   active = null;
-  try { previousFocus?.focus?.(); } catch { /* ignore */ }
+  let restored = false;
+  try {
+    restored = typeof returnFocus === 'function' ? returnFocus() === true : false;
+  } catch { /* ignore */ }
+  if (!restored) {
+    try {
+      if (previousFocus?.isConnected) previousFocus.focus?.();
+    } catch { /* ignore */ }
+  }
 }
 
 function paintStatuses() {
@@ -89,7 +97,7 @@ function paintStatuses() {
 
 /** Build the modal shell; rows are data objects created by each mode. */
 function openDialog({
-  title, subtitle, placeholder, categories, rows, selectedId, footer, onPick,
+  title, subtitle, placeholder, categories, rows, selectedId, footer, onPick, returnFocus = null,
 }) {
   closeBrowser();
   const previousFocus = document.activeElement;
@@ -123,7 +131,7 @@ function openDialog({
   const cats = overlay.querySelector('[data-browser-cats]');
   const count = overlay.querySelector('[data-browser-count]');
   const state = {
-    overlay, previousFocus, rows, selectedId, onPick, search, list, cats, count,
+    overlay, previousFocus, returnFocus, rows, selectedId, onPick, search, list, cats, count,
     query: '', category: 'All',
   };
   active = state;
@@ -209,7 +217,7 @@ function categoriesFor(rows) {
 
 /** Open the instrument / drum-voice picker. */
 export function openSoundBrowser({
-  target = 'note', selectedId = '', title = '', kitId = '', onSelect = () => {},
+  target = 'note', selectedId = '', title = '', kitId = '', onSelect = () => {}, returnFocus = null,
 } = {}) {
   const kit = resolveKitOr(kitId);
   const sounds = soundsForTarget(target);
@@ -251,6 +259,7 @@ export function openSoundBrowser({
     categories: categoriesFor(rows),
     rows,
     selectedId: selected,
+    returnFocus,
     onPick(row) {
       ensureAudio();
       if (isDrum) ensureDrumKit(kit.id);
@@ -261,7 +270,9 @@ export function openSoundBrowser({
 }
 
 /** Open the drum-kit picker. */
-export function openKitBrowser({ selectedId = '', title = 'drum kit', onSelect = () => {} } = {}) {
+export function openKitBrowser({
+  selectedId = '', title = 'drum kit', onSelect = () => {}, returnFocus = null,
+} = {}) {
   const rows = kitOptions().map((kit) => ({
     id: kit.id,
     label: kit.label,
@@ -281,6 +292,7 @@ export function openKitBrowser({ selectedId = '', title = 'drum kit', onSelect =
     categories: categoriesFor(rows),
     rows,
     selectedId,
+    returnFocus,
     onPick(row) {
       ensureAudio();
       ensureDrumKit(row.id);
