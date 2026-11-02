@@ -99,21 +99,61 @@ export function switchChannelType(channel, nextType) {
 export function createTemplateChannels(len = 16) {
   const steps = () => Array.from({ length: Math.max(1, len) }, () => null);
   return [
-    createChannel({ type: 'percussion', voiceId: 'kick', name: 'kick', steps: steps() }),
-    createChannel({ type: 'percussion', voiceId: 'snare', name: 'snare', steps: steps() }),
-    createChannel({ type: 'percussion', voiceId: 'closed-hat', name: 'hats', steps: steps() }),
-    createChannel({ type: 'percussion', voiceId: 'open-hat', name: 'open hat', steps: steps() }),
     createChannel({
-      type: 'note', name: 'bass', instrumentId: 'synth-bass-1', pitch: 'C', octave: 2, steps: steps(),
+      type: 'percussion',
+      voiceId: 'kick',
+      name: 'kick',
+      steps: steps(),
     }),
     createChannel({
-      type: 'chord', name: 'keys', instrumentId: 'rhodes', chordName: 'C', pitch: 'C', octave: 4, steps: steps(),
+      type: 'percussion',
+      voiceId: 'snare',
+      name: 'snare',
+      steps: steps(),
     }),
     createChannel({
-      type: 'note', name: 'lead', instrumentId: 'saw-lead', pitch: 'C', octave: 4, steps: steps(),
+      type: 'percussion',
+      voiceId: 'closed-hat',
+      name: 'hats',
+      steps: steps(),
     }),
     createChannel({
-      type: 'chord', name: 'pad', instrumentId: 'warm-pad', chordName: 'Cmaj7', steps: steps(),
+      type: 'percussion',
+      voiceId: 'open-hat',
+      name: 'open hat',
+      steps: steps(),
+    }),
+    createChannel({
+      type: 'note',
+      name: 'bass',
+      instrumentId: 'synth-bass-1',
+      pitch: 'C',
+      octave: 2,
+      steps: steps(),
+    }),
+    createChannel({
+      type: 'chord',
+      name: 'keys',
+      instrumentId: 'rhodes',
+      chordName: 'C',
+      pitch: 'C',
+      octave: 4,
+      steps: steps(),
+    }),
+    createChannel({
+      type: 'note',
+      name: 'lead',
+      instrumentId: 'saw-lead',
+      pitch: 'C',
+      octave: 4,
+      steps: steps(),
+    }),
+    createChannel({
+      type: 'chord',
+      name: 'pad',
+      instrumentId: 'warm-pad',
+      chordName: 'Cmaj7',
+      steps: steps(),
     }),
   ];
 }

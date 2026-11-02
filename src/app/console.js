@@ -12,8 +12,10 @@ import {
 } from '../sequencer/pattern.js';
 import {
   getActivePattern, arrangementToSlots, slotsToArrangement, resampleSlots,
-  arrangementBars, resolveArrangementStep, duplicatePattern,
+  arrangementBars, resolveArrangementStep, resolveArrangerStep, duplicatePattern,
   MAX_ARRANGE_BARS, normalizeArrangeDiv, normalizeArrangeBars,
+  ARRANGER_LANES, normalizeArrangeView,
+  arrangerLanesToSlots, arrangerSlotsToLanes,
 } from '../sequencer/project.js';
 import { createStepTransport } from '../sequencer/transport.js';
 import { playChannelHit } from '../audio/banks.js';
@@ -103,7 +105,7 @@ function saveKeysCurvePref(curve) {
 }
 // Session — clip launcher + arrangement timeline (live looper / song mode).
 let queuedPatternId = null; // clip waiting to start at the next bar boundary
-let songPlayingPatternId = null; // pattern sounding under the current song bar
+let songPlayingPatternIds = new Set(); // patterns sounding under the current song step
 let launchPads = false; // pads P1–P8 queue clips instead of auditioning
 let playbackUiActive = false; // playhead guard (transport may self-stop at song end)
 let renamePatternId = null; // pattern with an open inline rename editor
@@ -179,6 +181,7 @@ const arrangeDivSel = $('[data-arrange-div]');
 const arrangeRulerEl = $('[data-arrange-ruler]');
 const arrangePosEl = $('[data-arrange-pos]');
 const arrangePaintEl = $('[data-arrange-paint]');
+const arrangeViewButtons = Array.from(document.querySelectorAll('[data-arrange-view]'));
 const gridTitleEl = $('[data-grid-title]');
 const gridPanelEl = $('.mbz-grid-panel');
 const trackAddBtn = $('[data-track-add]');
@@ -237,23 +240,44 @@ function patternStepCount(pat) { return totalSteps(pat?.bars || 1, getBeats()); 
 function arrangeBarCount() {
   return arrangementBars(project);
 }
+function arrangeView() { return normalizeArrangeView(project.arrangeView); }
 function slotsFromProject() {
   const d = arrDiv();
   return arrangementToSlots(project.arrangement, arrangeBarCount() * d, d);
 }
+function laneSlotsFromProject(length) {
+  const d = arrDiv();
+  return arrangerLanesToSlots(project.arranger, length || arrangeBarCount() * d, d);
+}
 let arrangeSlots = slotsFromProject();
-function reloadArrangeSlots() { arrangeSlots = slotsFromProject(); }
+let arrangerLanes = laneSlotsFromProject(arrangeSlots.length);
+function reloadArrangeSlots() {
+  arrangeSlots = slotsFromProject();
+  arrangerLanes = laneSlotsFromProject(arrangeSlots.length);
+}
+
+function resizeSlotArray(slots, length) {
+  return Array.from({ length }, (_, i) => slots?.[i] || '');
+}
 
 function persist() {
   const d = arrDiv();
-  const bars = normalizeArrangeBars(Math.ceil((arrangeSlots.length || d) / d));
+  const longest = arrangerLanes.reduce(
+    (max, lane) => Math.max(max, lane.slots?.length || 0),
+    arrangeSlots.length || d,
+  );
+  const bars = normalizeArrangeBars(Math.ceil((longest || d) / d));
   const targetLen = bars * d;
-  if (arrangeSlots.length !== targetLen) {
-    arrangeSlots = Array.from({ length: targetLen }, (_, i) => arrangeSlots[i] || '');
-  }
+  arrangeSlots = resizeSlotArray(arrangeSlots, targetLen);
+  arrangerLanes = arrangerLanes.map((lane) => ({
+    ...lane,
+    slots: resizeSlotArray(lane.slots, targetLen),
+  }));
   project.arrangeDiv = d;
   project.arrangeBars = bars;
   project.arrangement = slotsToArrangement(arrangeSlots, d);
+  project.arranger = arrangerSlotsToLanes(arrangerLanes, d);
+  project.arrangeView = arrangeView();
   saveMbzProject(project);
   updateProjectNote();
 }
@@ -263,7 +287,7 @@ function updateProjectNote() {
   const queued = queuedPatternId
     ? ` → ${project.patterns.find((p) => p.id === queuedPatternId)?.name || '?'}`
     : '';
-  projectNote.textContent = `project: magicbeatz-v3 bpm ${project.bpm} · ${mode} · ${pat?.name || '?'}${queued}${imported ? ' imported from suite' : ''}`;
+  projectNote.textContent = `project: magicbeatz-v5 bpm ${project.bpm} · ${mode} · ${pat?.name || '?'}${queued}${imported ? ' imported from suite' : ''}`;
 }
 
 function getBpm() { return clampBpm(parseInt(bpmInput.value, 10) || 120); }
@@ -310,19 +334,26 @@ function scheduleArrangePlayhead(when, slotIndex, stepInSlot = 0) {
   window.setTimeout(() => {
     if (!playbackUiActive || project.playMode !== 'song') return;
     arrangeEl?.querySelectorAll('.mbz-slot.is-playhead').forEach((c) => c.classList.remove('is-playhead'));
-    const cell = arrangeEl?.querySelector(`.mbz-slot[data-slot="${slotIndex}"]`);
-    if (!cell) {
+    const cells = arrangeEl
+      ? [...arrangeEl.querySelectorAll(`.mbz-slot[data-slot="${slotIndex}"]`)]
+      : [];
+    if (!cells.length) {
       arrangeEl?.classList.remove('has-playhead');
       return;
     }
-    cell.classList.add('is-playhead');
+    cells.forEach((cell) => cell.classList.add('is-playhead'));
+    const cell = cells[0];
     arrangeEl.classList.add('has-playhead');
     // Move through the slot on each transport step (16ths at 4/bar).
     const steps = slotSteps();
     const fraction = steps > 1 ? Math.min(1, (stepInSlot + 1) / steps) : 1;
+    const lane = arrangeView() === 'arranger' ? cell.closest('.mbz-arranger-lane') : null;
+    const labelWidth = lane
+      ? (parseFloat(getComputedStyle(arrangeEl).getPropertyValue('--lane-label-w')) || 132) + 6
+      : 0;
     arrangeEl.style.setProperty(
       '--playhead-x',
-      `${cell.offsetLeft + cell.offsetWidth * fraction}px`,
+      `${labelWidth + cell.offsetLeft + cell.offsetWidth * fraction}px`,
     );
     const d = arrDiv();
     const bar = Math.floor(slotIndex / d) + 1;
@@ -370,27 +401,57 @@ function playPatternChannels(pat, idx, when) {
   }
 }
 
-/** Song mode: the arrangement timeline owns the loop; clips pick the voice. */
+function setSoundingPatterns(ids) {
+  const next = new Set(ids);
+  const same = next.size === songPlayingPatternIds.size
+    && [...next].every((id) => songPlayingPatternIds.has(id));
+  if (same) return;
+  songPlayingPatternIds = next;
+  renderSession();
+}
+
+/** Song mode: the arrangement timeline owns the loop; clips pick the voices. */
 function onSongStep(stepIndex, total, when) {
   const totalSlots = arrangeBarCount() * arrDiv();
-  const resolved = resolveArrangementStep(project, stepIndex, totalSlots);
-  const slotIndex = resolved ? resolved.slotIndex : Math.floor(stepIndex / slotSteps());
-  const stepInSlot = resolved ? resolved.stepInSlot : stepIndex % slotSteps();
-  scheduleArrangePlayhead(when, slotIndex, stepInSlot);
-  if (resolved) {
-    if (resolved.pattern.id !== songPlayingPatternId) {
-      songPlayingPatternId = resolved.pattern.id;
-      renderSession();
+  const stepSize = slotSteps();
+  const fallbackSlot = Math.floor(stepIndex / stepSize);
+  const fallbackStepInSlot = stepIndex % stepSize;
+
+  if (arrangeView() === 'arranger') {
+    const resolvedLanes = resolveArrangerStep(project, stepIndex, totalSlots);
+    scheduleArrangePlayhead(when, fallbackSlot, fallbackStepInSlot);
+
+    // Every active layer plays its entire Grid; layers mix and nothing is
+    // deduplicated. Mute/solo stay scoped inside each Grid.
+    const sounding = [];
+    let activeLane = null;
+    for (const resolved of resolvedLanes) {
+      if (!resolved) continue;
+      if (!activeLane && resolved.pattern.id === project.activePatternId) activeLane = resolved;
+      sounding.push(resolved.pattern.id);
+      playPatternChannels(resolved.pattern, resolved.localStep, when);
     }
-    if (resolved.pattern.id === project.activePatternId) {
-      schedulePlayhead(when, resolved.localStep);
+    setSoundingPatterns(sounding);
+    if (activeLane) schedulePlayhead(when, activeLane.localStep);
+    else scheduleGridClear(when);
+  } else {
+    const resolved = resolveArrangementStep(project, stepIndex, totalSlots);
+    const slotIndex = resolved ? resolved.slotIndex : fallbackSlot;
+    const stepInSlot = resolved ? resolved.stepInSlot : fallbackStepInSlot;
+    scheduleArrangePlayhead(when, slotIndex, stepInSlot);
+    if (resolved) {
+      setSoundingPatterns([resolved.pattern.id]);
+      if (resolved.pattern.id === project.activePatternId) {
+        schedulePlayhead(when, resolved.localStep);
+      } else {
+        scheduleGridClear(when);
+      }
+      playPatternChannels(resolved.pattern, resolved.localStep, when);
     } else {
+      // Empty bar = rest: keep the timeline moving, grid goes dark.
+      setSoundingPatterns([]);
       scheduleGridClear(when);
     }
-    playPatternChannels(resolved.pattern, resolved.localStep, when);
-  } else {
-    // Empty bar = rest: keep the timeline moving, grid goes dark.
-    scheduleGridClear(when);
   }
   if (!project.arrangeLoop && stepIndex >= total - 1) scheduleSongEnd(when);
 }
@@ -1022,12 +1083,12 @@ function updateVelocityUi() {
 
 // ---------- session: clip launcher + arrangement timeline ----------
 
-/** Pattern the launcher highlights as sounding (song: per-bar, else edit view). */
-function playingClipId() {
-  if (project.playMode === 'song' && playbackUiActive && songPlayingPatternId) {
-    return songPlayingPatternId;
+/** Whether a clip is sounding in the current transport context. */
+function patternIsSounding(patternId) {
+  if (project.playMode === 'song' && playbackUiActive) {
+    return songPlayingPatternIds.has(patternId);
   }
-  return project.activePatternId;
+  return project.activePatternId === patternId;
 }
 
 function syncSessionButtons() {
@@ -1048,6 +1109,12 @@ function syncSessionButtons() {
   if (launchHintEl) launchHintEl.textContent = launchPads ? ' · clips ▶' : '';
   if (arrangeLoopEl) arrangeLoopEl.checked = project.arrangeLoop !== false;
   if (arrangeDivSel) arrangeDivSel.value = String(arrDiv());
+  const view = arrangeView();
+  arrangeViewButtons.forEach((btn) => {
+    const active = btn.dataset.arrangeView === view;
+    btn.classList.toggle('is-active', active);
+    btn.setAttribute('aria-pressed', String(active));
+  });
 }
 
 /** Unified pattern switch (dropdown, clips, keys, pads). */
@@ -1114,7 +1181,6 @@ function commitRename(patternId, value) {
 function renderClips() {
   if (!clipsEl) return;
   clipsEl.innerHTML = '';
-  const playingId = playingClipId();
   project.patterns.forEach((p, i) => {
     const live = project.playMode !== 'song';
     if (p.id === renamePatternId) {
@@ -1150,7 +1216,7 @@ function renderClips() {
     btn.className = 'mbz-clip';
     btn.dataset.patternId = p.id;
     btn.style.setProperty('--clip', clipColor(i));
-    if (p.id === playingId) btn.classList.add('is-playing');
+    if (patternIsSounding(p.id)) btn.classList.add('is-playing');
     if (p.id === queuedPatternId) btn.classList.add('is-queued');
     if (p.id === project.activePatternId) btn.classList.add('is-edit');
     const key = i < 8 ? `<kbd>${i + 1}</kbd>` : '';
@@ -1164,7 +1230,7 @@ function renderClips() {
     btn.appendChild(meta);
     const badge = p.id === queuedPatternId
       ? '⏳'
-      : (playbackUiActive && transport.isRunning() && p.id === playingId ? '▶' : '');
+      : (playbackUiActive && transport.isRunning() && patternIsSounding(p.id) ? '▶' : '');
     if (badge) {
       const badgeEl = document.createElement('span');
       badgeEl.className = 'mbz-clip-badge';
@@ -1226,7 +1292,48 @@ function paintSlotCell(cell, index) {
   }
 }
 
-/** Bar numbers above the slots; each label spans one bar's worth of slots. */
+/** Generic layer label: layers are whole-Grid slots, never tracks. */
+function layerLabelText(laneIndex) {
+  return `Layer ${laneIndex + 1}`;
+}
+
+/** Paint one Arranger layer cell without re-rendering the whole matrix. */
+function paintLaneSlotCell(cell, laneIndex, index) {
+  const d = arrDiv();
+  const lane = arrangerLanes[laneIndex];
+  const id = lane?.slots[index] || '';
+  const p = id ? project.patterns.find((x) => x.id === id) : null;
+  const bar = Math.floor(index / d) + 1;
+  const sub = (index % d) + 1;
+  const layerName = layerLabelText(laneIndex);
+  cell.className = slotCellClasses(index, id);
+  cell.dataset.slot = String(index);
+  cell.dataset.lane = String(laneIndex);
+  if (p) {
+    const isTarget = id === project.activePatternId;
+    const activeName = activePattern()?.name || '?';
+    cell.style.setProperty('--clip', clipColor(project.patterns.indexOf(p)));
+    cell.textContent = shortPatternLabel(p.name);
+    cell.title = isTarget
+      ? `${layerName} · bar ${bar}.${sub} · ${p.name} · click = rest`
+      : `${layerName} · bar ${bar}.${sub} · ${p.name} · click = paint ${activeName}`;
+    cell.setAttribute(
+      'aria-label',
+      isTarget
+        ? `${layerName}, bar ${bar} slot ${sub}, ${p.name}, click to clear`
+        : `${layerName}, bar ${bar} slot ${sub}, ${p.name}, click to replace with ${activeName}`,
+    );
+  } else {
+    const activeName = activePattern()?.name || '?';
+    cell.style.removeProperty('--clip');
+    cell.textContent = '';
+    cell.title = `${layerName} · bar ${bar}.${sub} · rest · click = paint ${activeName}`;
+    cell.setAttribute(
+      'aria-label',
+      `${layerName}, bar ${bar} slot ${sub}, rest, click to paint ${activeName}`,
+    );
+  }
+}
 function renderArrangeRuler(len) {
   if (!arrangeRulerEl) return;
   const d = arrDiv();
@@ -1240,38 +1347,99 @@ function renderArrangeRuler(len) {
   }
 }
 
+/** Eight-row Arranger matrix. Each row is an independent whole-Grid layer. */
+function renderArrangerLanes(len) {
+  for (let laneIndex = 0; laneIndex < ARRANGER_LANES; laneIndex += 1) {
+    const row = document.createElement('div');
+    row.className = 'mbz-arranger-lane';
+    row.dataset.lane = String(laneIndex);
+
+    const label = document.createElement('div');
+    label.className = 'mbz-lane-label';
+    const name = document.createElement('span');
+    name.className = 'mbz-lane-name';
+    name.textContent = layerLabelText(laneIndex);
+    label.appendChild(name);
+    label.title = `${layerLabelText(laneIndex)} · plays whole Grids`;
+    row.appendChild(label);
+
+    const slotsEl = document.createElement('div');
+    slotsEl.className = 'mbz-lane-slots';
+    slotsEl.style.setProperty('--slots', String(len));
+    slotsEl.setAttribute('role', 'grid');
+    slotsEl.setAttribute('aria-label', layerLabelText(laneIndex));
+    for (let i = 0; i < len; i += 1) {
+      const cell = document.createElement('button');
+      cell.type = 'button';
+      cell.className = 'mbz-slot';
+      cell.dataset.slot = String(i);
+      cell.dataset.lane = String(laneIndex);
+      paintLaneSlotCell(cell, laneIndex, i);
+      cell.addEventListener('click', (e) => {
+        if (e.detail !== 0) return;
+        paintLaneSlot(laneIndex, i, { toggle: true });
+      });
+      cell.addEventListener('pointerdown', (e) => startArrangePaint(e, i, laneIndex));
+      cell.addEventListener('pointerenter', () => extendArrangePaint(i, laneIndex));
+      slotsEl.appendChild(cell);
+    }
+    row.appendChild(slotsEl);
+    arrangeEl.appendChild(row);
+  }
+}
+
 function renderArrange() {
   if (!arrangeEl) return;
   const d = arrDiv();
-  const len = Math.max(d, Math.min(MAX_ARRANGE_BARS * d, arrangeSlots.length || arrangeBarCount() * d));
+  const laneLength = arrangerLanes.reduce((max, lane) => Math.max(max, lane.slots?.length || 0), 0);
+  const len = Math.max(
+    d,
+    Math.min(MAX_ARRANGE_BARS * d, Math.max(arrangeSlots.length || 0, laneLength) || arrangeBarCount() * d),
+  );
+  const view = arrangeView();
   arrangeEl.style.setProperty('--slots', String(len));
+  arrangeEl.classList.toggle('is-arranger', view === 'arranger');
+  arrangeEl.closest('.mbz-arrange-scroll')?.classList.toggle('is-arranger', view === 'arranger');
   arrangeEl.innerHTML = '';
-  for (let i = 0; i < len; i += 1) {
-    const cell = document.createElement('button');
-    cell.type = 'button';
-    cell.className = 'mbz-slot';
-    cell.dataset.slot = String(i);
-    paintSlotCell(cell, i);
-    // Pointer presses paint on pointerdown (drag support); clicks only matter
-    // for keyboard activation (Enter/Space report detail 0).
-    cell.addEventListener('click', (e) => {
-      if (e.detail !== 0) return;
-      paintSlot(i, { toggle: true });
-    });
-    cell.addEventListener('pointerdown', (e) => startArrangePaint(e, i));
-    cell.addEventListener('pointerenter', () => extendArrangePaint(i));
-    arrangeEl.appendChild(cell);
+
+  if (view === 'arranger') {
+    renderArrangerLanes(len);
+  } else {
+    for (let i = 0; i < len; i += 1) {
+      const cell = document.createElement('button');
+      cell.type = 'button';
+      cell.className = 'mbz-slot';
+      cell.dataset.slot = String(i);
+      paintSlotCell(cell, i);
+      // Pointer presses paint on pointerdown (drag support); clicks only matter
+      // for keyboard activation (Enter/Space report detail 0).
+      cell.addEventListener('click', (e) => {
+        if (e.detail !== 0) return;
+        paintSlot(i, { toggle: true });
+      });
+      cell.addEventListener('pointerdown', (e) => startArrangePaint(e, i));
+      cell.addEventListener('pointerenter', () => extendArrangePaint(i));
+      arrangeEl.appendChild(cell);
+    }
   }
+
   renderArrangeRuler(len);
   const bars = Math.max(1, Math.round(len / d));
   if (arrangeLenEl) arrangeLenEl.textContent = `${bars} bar${bars === 1 ? '' : 's'} · ${len} slot${len === 1 ? '' : 's'}`;
-  if (arrangePaintEl) arrangePaintEl.textContent = `paint: ${activePattern()?.name || '?'}`;
+  if (arrangePaintEl) {
+    arrangePaintEl.textContent = view === 'arranger'
+      ? `paint: ${activePattern()?.name || '?'} into any layer`
+      : `paint: ${activePattern()?.name || '?'}`;
+  }
   if (arrangePosEl && !arrangeEl.classList.contains('has-playhead')) {
     updateArrangePosition(`bar — / ${bars}`);
   }
   if (arrangeAddBtn) arrangeAddBtn.disabled = len >= MAX_ARRANGE_BARS * d;
   if (arrangeDelBtn) arrangeDelBtn.disabled = len <= d;
-  if (arrangeClearBtn) arrangeClearBtn.disabled = !arrangeSlots.some(Boolean);
+  const hasClips = view === 'arranger'
+    ? arrangerLanes.some((lane) => lane.slots.some(Boolean))
+    : arrangeSlots.some(Boolean);
+  if (arrangeClearBtn) arrangeClearBtn.disabled = !hasClips;
   if (arrangeDivSel) arrangeDivSel.value = String(d);
 }
 
@@ -1279,8 +1447,17 @@ function paintSlotValue(index, value) {
   if (index < 0 || index >= arrangeSlots.length) return;
   if ((arrangeSlots[index] || '') === value) return;
   arrangeSlots[index] = value;
-  const cell = arrangeEl?.querySelector(`.mbz-slot[data-slot="${index}"]`);
+  const cell = arrangeEl?.querySelector(`.mbz-slot[data-slot="${index}"]:not([data-lane])`);
   if (cell) paintSlotCell(cell, index);
+}
+
+function paintLaneSlotValue(laneIndex, index, value) {
+  const lane = arrangerLanes[laneIndex];
+  if (!lane || index < 0 || index >= lane.slots.length) return;
+  if ((lane.slots[index] || '') === value) return;
+  lane.slots[index] = value;
+  const cell = arrangeEl?.querySelector(`.mbz-slot[data-lane="${laneIndex}"][data-slot="${index}"]`);
+  if (cell) paintLaneSlotCell(cell, laneIndex, index);
 }
 
 function paintSlot(index, { toggle = false } = {}) {
@@ -1292,16 +1469,30 @@ function paintSlot(index, { toggle = false } = {}) {
   renderArrange();
 }
 
-let arrangePaint = null; // { value, visited:Set } while dragging across slots
+function paintLaneSlot(laneIndex, index, { toggle = false } = {}) {
+  const lane = arrangerLanes[laneIndex];
+  if (!lane || index < 0 || index >= lane.slots.length) return;
+  const target = project.activePatternId;
+  const current = lane.slots[index] || '';
+  paintLaneSlotValue(laneIndex, index, toggle && current === target ? '' : target);
+  persist();
+  renderArrange();
+}
 
-function startArrangePaint(e, index) {
+let arrangePaint = null; // { value, laneIndex, visited:Set } while dragging across slots
+
+function startArrangePaint(e, index, laneIndex = null) {
   if (e.button !== 0) return;
-  if (index < 0 || index >= arrangeSlots.length) return;
+  const lane = laneIndex == null ? null : arrangerLanes[laneIndex];
+  const slots = lane ? lane.slots : arrangeSlots;
+  if (index < 0 || index >= slots.length) return;
   e.preventDefault();
   const target = project.activePatternId;
-  const value = (arrangeSlots[index] || '') === target ? '' : target;
-  arrangePaint = { value, visited: new Set([index]) };
-  paintSlotValue(index, value);
+  const value = (slots[index] || '') === target ? '' : target;
+  const key = `${laneIndex ?? 'looper'}:${index}`;
+  arrangePaint = { value, laneIndex, visited: new Set([key]) };
+  if (lane) paintLaneSlotValue(laneIndex, index, value);
+  else paintSlotValue(index, value);
   arrangeEl?.classList.add('is-painting');
 
   const scroller = arrangeEl?.closest('.mbz-arrange-scroll');
@@ -1316,8 +1507,10 @@ function startArrangePaint(e, index) {
     }
     const hit = document.elementFromPoint(ev.clientX, ev.clientY)?.closest?.('.mbz-slot');
     if (hit && arrangeEl?.contains(hit)) {
+      const hitLane = hit.dataset.lane == null ? null : Number(hit.dataset.lane);
+      if (hitLane !== arrangePaint.laneIndex) return;
       const index = Number(hit.dataset.slot);
-      if (Number.isFinite(index)) extendArrangePaint(index);
+      if (Number.isFinite(index)) extendArrangePaint(index, hitLane);
     }
   };
 
@@ -1336,11 +1529,17 @@ function startArrangePaint(e, index) {
   window.addEventListener('pointermove', trackPaint);
 }
 
-function extendArrangePaint(index) {
-  if (!arrangePaint || arrangePaint.visited.has(index)) return;
-  if (index < 0 || index >= arrangeSlots.length) return;
-  arrangePaint.visited.add(index);
-  paintSlotValue(index, arrangePaint.value);
+function extendArrangePaint(index, laneIndex = null) {
+  if (!arrangePaint) return;
+  if (laneIndex !== arrangePaint.laneIndex) return;
+  const key = `${laneIndex ?? 'looper'}:${index}`;
+  if (arrangePaint.visited.has(key)) return;
+  const lane = laneIndex == null ? null : arrangerLanes[laneIndex];
+  const slots = lane ? lane.slots : arrangeSlots;
+  if (index < 0 || index >= slots.length) return;
+  arrangePaint.visited.add(key);
+  if (lane) paintLaneSlotValue(laneIndex, index, arrangePaint.value);
+  else paintSlotValue(index, arrangePaint.value);
 }
 
 function renderSession() {
@@ -1355,7 +1554,7 @@ function onTransportStopped() {
   transport.stop();
   playbackUiActive = false;
   queuedPatternId = null;
-  songPlayingPatternId = null;
+  songPlayingPatternIds = new Set();
   clearPlayheads();
   setPlaying(false);
   renderSession();
@@ -1366,13 +1565,28 @@ function setPlayMode(mode) {
   if (project.playMode === next) return;
   project.playMode = next;
   queuedPatternId = null;
-  songPlayingPatternId = null;
+  songPlayingPatternIds = new Set();
   clearPlayheads();
   arrangeSlots = slotsFromProject();
   persist();
   renderSession();
   if (transport.isRunning()) {
     // Restart so the new loop (pattern or full timeline) begins at step 0.
+    transport.stop();
+    transport.start();
+  }
+}
+
+function setArrangeView(view) {
+  const next = normalizeArrangeView(view);
+  if (arrangeView() === next) return;
+  project.arrangeView = next;
+  songPlayingPatternIds = new Set();
+  clearPlayheads();
+  persist();
+  renderSession();
+  if (project.playMode === 'song' && transport.isRunning()) {
+    // The two timelines are independent; restart the Song loop at step 0.
     transport.stop();
     transport.start();
   }
@@ -1423,6 +1637,10 @@ function deleteActivePattern() {
   project.activePatternId = project.patterns[0].id;
   if (queuedPatternId === id) queuedPatternId = null;
   arrangeSlots = arrangeSlots.map((s) => (s === id ? '' : s));
+  arrangerLanes = arrangerLanes.map((lane) => ({
+    ...lane,
+    slots: lane.slots.map((s) => (s === id ? '' : s)),
+  }));
   selectedCell = null;
   trackPopoverId = null;
   refreshPatternViews();
@@ -2161,7 +2379,7 @@ playBtn.addEventListener('click', () => {
   flushPendingLoads();
   if (!transport.start()) return;
   playbackUiActive = true;
-  songPlayingPatternId = null;
+  songPlayingPatternIds = new Set();
   if (project.playMode === 'song') clearPlayheads();
   setPlaying(true);
   renderSession();
@@ -2214,6 +2432,9 @@ barsSelect.addEventListener('change', () => {
 /** Session controls: mode, launch pads, timeline length, pattern bank. */
 modeLiveBtn?.addEventListener('click', () => setPlayMode('pattern'));
 modeSongBtn?.addEventListener('click', () => setPlayMode('song'));
+arrangeViewButtons.forEach((btn) => {
+  btn.addEventListener('click', () => setArrangeView(btn.dataset.arrangeView));
+});
 launchBtn?.addEventListener('click', () => {
   launchPads = !launchPads;
   renderSession();
@@ -2228,6 +2449,10 @@ arrangeAddBtn?.addEventListener('click', () => {
   const d = arrDiv();
   if (arrangeSlots.length + d > MAX_ARRANGE_BARS * d) return;
   for (let k = 0; k < d; k += 1) arrangeSlots.push('');
+  arrangerLanes = arrangerLanes.map((lane) => ({
+    ...lane,
+    slots: [...lane.slots, ...Array.from({ length: d }, () => '')],
+  }));
   persist();
   renderArrange();
 });
@@ -2235,12 +2460,24 @@ arrangeDelBtn?.addEventListener('click', () => {
   const d = arrDiv();
   if (arrangeSlots.length <= d) return;
   arrangeSlots.splice(arrangeSlots.length - d, d);
+  arrangerLanes = arrangerLanes.map((lane) => ({
+    ...lane,
+    slots: lane.slots.slice(0, Math.max(d, lane.slots.length - d)),
+  }));
   persist();
   renderArrange();
 });
 arrangeClearBtn?.addEventListener('click', () => {
-  if (!arrangeSlots.some(Boolean)) return;
-  arrangeSlots = arrangeSlots.map(() => '');
+  if (arrangeView() === 'arranger') {
+    if (!arrangerLanes.some((lane) => lane.slots.some(Boolean))) return;
+    arrangerLanes = arrangerLanes.map((lane) => ({
+      ...lane,
+      slots: lane.slots.map(() => ''),
+    }));
+  } else {
+    if (!arrangeSlots.some(Boolean)) return;
+    arrangeSlots = arrangeSlots.map(() => '');
+  }
   persist();
   renderArrange();
 });
@@ -2250,6 +2487,10 @@ arrangeDivSel?.addEventListener('change', () => {
   if (next === prev) return;
   project.arrangeDiv = next;
   arrangeSlots = resampleSlots(arrangeSlots, prev, next);
+  arrangerLanes = arrangerLanes.map((lane) => ({
+    ...lane,
+    slots: resampleSlots(lane.slots, prev, next),
+  }));
   persist();
   renderArrange();
   renderSession();
@@ -2401,7 +2642,7 @@ document.querySelector('[data-grid-clear]').addEventListener('click', () => {
 document.querySelector('[data-grid-reset]').addEventListener('click', () => {
   project = resetMbzProject();
   queuedPatternId = null;
-  songPlayingPatternId = null;
+  songPlayingPatternIds = new Set();
   renamePatternId = null;
   trackPopoverId = null;
   arrangePaint = null;

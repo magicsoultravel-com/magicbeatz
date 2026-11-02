@@ -1,11 +1,22 @@
 /**
- * Project document v3: pattern bank + slot-resolution arrangement playlist.
+ * Project document v5: pattern bank + whole-Grid Arranger layers.
+ *
+ * A Grid (`patterns[]`) is a complete, independent multi-track pattern. The
+ * Looper is one timeline lane of whole Grids; the Arranger is eight independent
+ * timeline lanes, each also holding whole Grids. A lane clip stores only a
+ * `patternId` — never a track or channel — so every active lane plays its entire
+ * Grid, and all active layers mix together.
  *
  * v2 stored arrangement clips in whole bars ({startBar, lengthBars}). v3 keeps
  * the same clip shape but positions them in *slots* ({startSlot, lengthSlot})
  * so several clips can share one bar. `arrangeDiv` = slots per bar (1/2/4);
  * migration from v2 multiplies old bar positions by `arrangeDiv`, so an old
  * project plays back at exactly the same time.
+ *
+ * v4 bound each Arranger lane to a channel id (a per-track filter). That model
+ * was rejected: v5 drops channel bindings and clears the v4 Arranger once on
+ * load, because channel-filtered lane clips cannot be translated into whole-Grid
+ * layers without every lane suddenly playing a full overlapping Grid.
  */
 import {
   STORAGE_KEY,
@@ -33,6 +44,23 @@ export const DEFAULT_ARRANGE_BARS = MAX_ARRANGE_BARS;
 export const ARRANGE_DIVS = [1, 2, 4];
 export const DEFAULT_ARRANGE_DIV = 4;
 export const MAX_ARRANGE_SLOTS = MAX_ARRANGE_BARS * DEFAULT_ARRANGE_DIV;
+/** The Arranger always exposes exactly eight independent whole-Grid layers. */
+export const ARRANGER_LANES = 8;
+export const ARRANGE_VIEWS = ['looper', 'arranger'];
+const ARRANGER_LANE_IDS = Array.from({ length: ARRANGER_LANES }, (_, i) => `lane-${i + 1}`);
+
+/** Coerce any stored arrangement view. */
+export function normalizeArrangeView(value) {
+  return value === 'arranger' ? 'arranger' : 'looper';
+}
+
+/** Build the eight independent whole-Grid layer records. */
+export function createArrangerLanes() {
+  return ARRANGER_LANE_IDS.map((id) => ({
+    id,
+    arrangement: [],
+  }));
+}
 
 /** Coerce any stored value to a supported slots-per-bar resolution. */
 export function normalizeArrangeDiv(value) {
@@ -90,6 +118,23 @@ export function arrangementLengthBars(arrangement, div = DEFAULT_ARRANGE_DIV) {
   return Math.ceil(arrangementLengthSlots(arrangement, d) / d);
 }
 
+/** Longest end slot across all Arranger lanes. */
+export function arrangerLengthSlots(arranger, div = DEFAULT_ARRANGE_DIV) {
+  const lanes = Array.isArray(arranger?.lanes) ? arranger.lanes : [];
+  return lanes.reduce(
+    (max, lane) => Math.max(max, arrangementLengthSlots(lane?.arrangement, div)),
+    0,
+  );
+}
+
+/** Longest end slot across Looper and every Arranger lane. */
+export function projectArrangementLengthSlots(project, div = DEFAULT_ARRANGE_DIV) {
+  return Math.max(
+    arrangementLengthSlots(project?.arrangement, div),
+    arrangerLengthSlots(project?.arranger, div),
+  );
+}
+
 /**
  * Arrangement canvas length in bars.
  *
@@ -99,7 +144,7 @@ export function arrangementLengthBars(arrangement, div = DEFAULT_ARRANGE_DIV) {
  */
 export function arrangementBars(project) {
   const div = normalizeArrangeDiv(project?.arrangeDiv);
-  const clipBars = Math.ceil(arrangementLengthSlots(project?.arrangement, div) / div) || 0;
+  const clipBars = Math.ceil(projectArrangementLengthSlots(project, div) / div) || 0;
   const stored = parseInt(project?.arrangeBars, 10);
   const fallback = Number.isFinite(stored) ? stored : DEFAULT_ARRANGE_BARS;
   return normalizeArrangeBars(Math.max(fallback, clipBars));
@@ -168,6 +213,54 @@ export function resampleSlots(slots, fromDiv, toDiv, maxBars = MAX_ARRANGE_BARS)
   return out;
 }
 
+/**
+ * Convert lane clip arrays to editable slot arrays.
+ * Lane ids are preserved; clips stay whole-Grid references.
+ */
+export function arrangerLanesToSlots(arranger, length, div = DEFAULT_ARRANGE_DIV) {
+  const lanes = Array.isArray(arranger?.lanes) ? arranger.lanes : [];
+  return Array.from({ length: ARRANGER_LANES }, (_, index) => {
+    const lane = lanes[index] || {};
+    return {
+      id: lane.id || ARRANGER_LANE_IDS[index],
+      slots: arrangementToSlots(lane.arrangement, length, div),
+    };
+  });
+}
+
+/** Regenerate lane clip arrays from editable slot arrays. */
+export function arrangerSlotsToLanes(lanes, div = DEFAULT_ARRANGE_DIV) {
+  const source = Array.isArray(lanes) ? lanes : [];
+  return {
+    lanes: Array.from({ length: ARRANGER_LANES }, (_, index) => {
+      const lane = source[index] || {};
+      return {
+        id: lane.id || ARRANGER_LANE_IDS[index],
+        arrangement: slotsToArrangement(Array.isArray(lane.slots) ? lane.slots : [], div),
+      };
+    }),
+  };
+}
+
+/** Parse stored layer records, preserving lane ids and dropping stale clips. */
+export function normalizeArrangerLanes(raw, patterns = [], div = DEFAULT_ARRANGE_DIV) {
+  const source = Array.isArray(raw?.lanes) ? raw.lanes : [];
+  const d = normalizeArrangeDiv(div);
+  return {
+    lanes: Array.from({ length: ARRANGER_LANES }, (_, index) => {
+      const lane = source[index] || {};
+      const arrangement = Array.isArray(lane.arrangement) ? lane.arrangement : [];
+      return {
+        id: lane.id || ARRANGER_LANE_IDS[index],
+        arrangement: arrangement
+          .filter((c) => patterns.some((p) => p.id === c.patternId))
+          .filter((c) => clipStartSlot(c, d) < MAX_ARRANGE_SLOTS)
+          .map((c) => createArrangementClip(c, d)),
+      };
+    }),
+  };
+}
+/** Expand to at least N bars while preserving stored slot length. */
 export function ensureArrangementSlots(project, minBars = 1) {
   const d = normalizeArrangeDiv(project.arrangeDiv);
   const bars = Math.max(arrangementBars(project), normalizeArrangeBars(minBars, 1));
@@ -227,6 +320,65 @@ export function resolveArrangementStep(project, globalStep, totalSlotsOverride) 
 
 export function getActivePattern(project) {
   return project.patterns.find((p) => p.id === project.activePatternId) || project.patterns[0] || null;
+}
+
+/**
+ * Resolve the eight Arranger layers for one global step.
+ *
+ * Every layer owns its own clip sequence and local step, and resolves a whole
+ * Grid (`pattern`) rather than a single channel. Layers are independent: the
+ * same Grid may sound on several layers at once, and nothing is deduplicated.
+ */
+export function resolveArrangerStep(project, globalStep, totalSlotsOverride) {
+  const beats = beatsFromTimeSignature(project.timeSignature);
+  const div = normalizeArrangeDiv(project.arrangeDiv);
+  const barSteps = stepsPerBar(beats);
+  const slotSteps = Math.max(1, Math.round(barSteps / div));
+  const totalSlots = Math.max(
+    1,
+    totalSlotsOverride || 0,
+    arrangementLengthSlots(project?.arrangement, div),
+    arrangerLengthSlots(project?.arranger, div),
+  );
+  const totalStepsCount = totalSlots * slotSteps;
+  if (totalStepsCount <= 0) return Array(ARRANGER_LANES).fill(null);
+
+  const step = ((globalStep % totalStepsCount) + totalStepsCount) % totalStepsCount;
+  const slotIndex = Math.floor(step / slotSteps);
+  const stepInSlot = step % slotSteps;
+  const globalBar = Math.floor(step / barSteps);
+  const lanes = Array.isArray(project?.arranger?.lanes) ? project.arranger.lanes : [];
+
+  return Array.from({ length: ARRANGER_LANES }, (_, laneIndex) => {
+    const lane = lanes[laneIndex];
+    if (!lane) return null;
+    const clip = [...(lane.arrangement || [])]
+      .sort((a, b) => clipStartSlot(a, div) - clipStartSlot(b, div))
+      .find((c) => {
+        const start = clipStartSlot(c, div);
+        return slotIndex >= start && slotIndex < start + clipLengthSlot(c, div);
+      });
+    if (!clip) return null;
+
+    const pattern = project.patterns.find((p) => p.id === clip.patternId);
+    if (!pattern) return null;
+
+    const clipStartStep = clipStartSlot(clip, div) * slotSteps;
+    const patternSteps = Math.max(1, (pattern.bars || 1) * barSteps);
+    const localStep = ((step - clipStartStep) % patternSteps + patternSteps) % patternSteps;
+
+    return {
+      pattern,
+      localStep,
+      clip,
+      globalBar,
+      slotIndex,
+      stepInSlot,
+      globalStep: step,
+      laneId: lane.id,
+      laneIndex,
+    };
+  });
 }
 
 export function setStepOn(channel, index, on, velocity = DEFAULT_VELOCITY) {
@@ -353,7 +505,7 @@ export function createDefaultProject() {
   const active = patterns[0];
   const arrangeDiv = DEFAULT_ARRANGE_DIV;
   return {
-    version: 3,
+    version: 5,
     bpm: 120,
     timeSignature,
     swing: 0,
@@ -366,6 +518,10 @@ export function createDefaultProject() {
         lengthSlot: active.bars * arrangeDiv,
       }, arrangeDiv),
     ],
+    arranger: {
+      lanes: createArrangerLanes(),
+    },
+    arrangeView: 'looper',
     arrangeDiv,
     arrangeBars: DEFAULT_ARRANGE_BARS,
     arrangeLoop: true,
@@ -374,8 +530,9 @@ export function createDefaultProject() {
 }
 
 export function serializeProject(project) {
+  const arranger = normalizeArrangerLanes(project.arranger, project.patterns, project.arrangeDiv);
   return {
-    version: 3,
+    version: 5,
     bpm: project.bpm,
     timeSignature: project.timeSignature,
     swing: project.swing,
@@ -392,6 +549,18 @@ export function serializeProject(project) {
       startSlot: c.startSlot,
       lengthSlot: c.lengthSlot,
     })),
+    arranger: {
+      lanes: arranger.lanes.map((lane) => ({
+        id: lane.id,
+        arrangement: lane.arrangement.map((c) => ({
+          id: c.id,
+          patternId: c.patternId,
+          startSlot: c.startSlot,
+          lengthSlot: c.lengthSlot,
+        })),
+      })),
+    },
+    arrangeView: normalizeArrangeView(project.arrangeView),
     arrangeDiv: normalizeArrangeDiv(project.arrangeDiv),
     arrangeBars: arrangementBars(project),
     arrangeLoop: !!project.arrangeLoop,
@@ -410,7 +579,7 @@ export function migrateV1ToProject(raw) {
   }, legacy.timeSignature);
   const arrangeDiv = DEFAULT_ARRANGE_DIV;
   return {
-    version: 3,
+    version: 5,
     bpm: legacy.bpm,
     timeSignature: legacy.timeSignature,
     swing: legacy.swing,
@@ -423,6 +592,10 @@ export function migrateV1ToProject(raw) {
         lengthSlot: pattern.bars * arrangeDiv,
       }, arrangeDiv),
     ],
+    arranger: {
+      lanes: createArrangerLanes(),
+    },
+    arrangeView: 'looper',
     arrangeDiv,
     arrangeBars: DEFAULT_ARRANGE_BARS,
     arrangeLoop: true,
@@ -433,11 +606,12 @@ export function migrateV1ToProject(raw) {
 export function parseProject(raw) {
   if (!raw || typeof raw !== 'object') return createDefaultProject();
 
-  if (raw.version !== 2 && raw.version !== 3
+  if (raw.version !== 2 && raw.version !== 3 && raw.version !== 4 && raw.version !== 5
     && Array.isArray(raw.channels) && !Array.isArray(raw.patterns)) {
     return migrateV1ToProject(raw);
   }
 
+  const version = parseInt(raw.version, 10) || 0;
   const bpm = clampBpm(raw.bpm ?? 120);
   const swing = clamp01(raw.swing ?? 0);
   let timeSignature = [4, 4];
@@ -487,22 +661,36 @@ export function parseProject(raw) {
     }, arrangeDiv)];
   }
 
+  // Arranger layers are always exactly eight independent whole-Grid records.
+  // v5 preserves them (and the active view) exactly. v4 lane clips were
+  // authored under the rejected per-track filter model and cannot be translated
+  // into whole-Grid layers, so they are cleared once and the project opens on
+  // the (untouched) Looper. v2/v3 seed eight empty layers.
+  const sourceArranger = raw.arranger && typeof raw.arranger === 'object' ? raw.arranger : null;
+  const arranger = version >= 5 && sourceArranger
+    ? normalizeArrangerLanes(sourceArranger, patterns, arrangeDiv)
+    : { lanes: createArrangerLanes() };
+  const arrangeView = version >= 5 ? normalizeArrangeView(raw.arrangeView) : 'looper';
+
   // Migration: legacy documents open on the full 16-bar canvas. Explicit
   // lengths are preserved, and clips beyond the stored end expand it.
   const arrangeBars = arrangementBars({
     arrangeDiv,
     arrangeBars: raw.arrangeBars,
     arrangement,
+    arranger,
   });
 
   return {
-    version: 3,
+    version: 5,
     bpm,
     timeSignature,
     swing,
     patterns,
     activePatternId,
     arrangement,
+    arranger,
+    arrangeView,
     arrangeDiv,
     arrangeBars,
     arrangeLoop: raw.arrangeLoop !== false,
@@ -529,14 +717,16 @@ export function saveProject(project) {
 }
 
 export function duplicatePattern(pattern, name) {
+  // Grids are independent: a copy gets fresh channel ids. Arranger layers point
+  // at whole Grids, so nothing outside the new Grid needs to keep these ids.
   const copy = parsePatternChannels({
     ...pattern,
     id: nextPatternId(),
     name: name || `${pattern.name} copy`,
-    channels: pattern.channels.map((ch) => ({
-      ...serializeChannel(ch),
-      id: undefined,
-    })),
+    channels: pattern.channels.map((ch) => {
+      const { id, ...rest } = serializeChannel(ch);
+      return rest;
+    }),
   });
   return copy;
 }
