@@ -31,9 +31,12 @@ modules, so any static server works too.
 - `src/theory/` → music + chords (theory triads for named/degree chords)
 - `src/pads/model.js` → 8 pads × banks A/B, kit per bank, (channel, note) routing
 - `src/midi/` → connection / firmware SysEx inquiry / note helpers
+- `src/keys/perform.js` → note repeat + arpeggiator (rates, arp sequences, perform clock)
 - `src/state/` → store (isolated keys) + settings (knob CCs, octaves)
 - `tests/arrangement.test.mjs` → 16-bar Looper timeline, migration and song-resolution tests
 - `tests/arranger.test.mjs` → whole-Grid Arranger layers, layering, migration and serialization tests
+- `tests/perform.test.mjs` → repeat/arp rates, arp ordering, pref normalization, step-gate fit tests
+- `tests/sampler-step.test.mjs` → gated sample step events (duration/release/unique stopId)
 - `assets/` → notes/chords/scales/chords-theory JSON
 
 ## Sounds
@@ -53,6 +56,38 @@ modules, so any static server works too.
   saved projects (`piano` → `grand`, `bass-sub` → `synth-bass-1`,
   `hi-tom` → `tom-high`).
 
+
+## Keys — note repeat & arpeggiator
+
+Below the keyboard is a collapsible **repeat / arp** drawer (the collapsed bar
+shows the live setting, e.g. `repeat · 1/16` or `arp · up/down · 1/16 · 2 oct`).
+Both are hold-to-play performance modes on the same pointer / computer-keyboard
+/ MIDI input path as normal playing:
+
+- **repeat** — MPC-style note repeat: hold any key (or chord) and it retriggers
+  at the selected rate. Releasing the last key stops it.
+- **arp** — arpeggiator: hold a chord and its notes cycle in **up**, **down**,
+  **up/down** (no repeated turnaround) or **random** (reshuffled per chord)
+  order, with 1–3 **oct** layers. **latch** keeps the last chord cycling after
+  release; the next press starts a new chord.
+
+Details:
+
+- Rates are tempo-synced (1/4, 1/8, 1/8T, 1/16, 1/16T, 1/32) and follow the
+  transport BPM live, including mid-hold changes.
+- Every step is its own short note: sounds stop on the audio clock inside the
+  sampler (`duration`) with a ~30 ms fade instead of the 300 ms preset release,
+  so repeats read as `du-du-du-du` rather than one blurred tone, and a step can
+  never cut a later, already-scheduled step of the same pitch (each step has its
+  own smplr `stopId`). Synth patches that support sustain are opened and released
+  per step the same way.
+- **repeat** and **arp** are mutually exclusive; turning one on turns the other
+  off. Turning both off while keys are held keeps them sounding as normal
+  sustains.
+- Both respect the **audition** toggle and capture into the active clip while
+  ⏺ record is armed, so repeated/arped notes land on the grid.
+- Releases are gated per step (repeat 60%, arp 80%), so nothing sticks: mode
+  off, last key up, audition off, octave change or tab blur all stop the run.
 
 ## Tracks
 
@@ -128,5 +163,7 @@ modules, so any static server works too.
 
 - `magicbeatz-v1` (project) + `magicbeatz-padmap-v1` (pads, schema 3 with
   per-bank kits) — both schema-tagged and migrated in place.
+- `magicbeatz-keys-perform-v1` holds the repeat/arp prefs (toggles, rates, arp
+  mode, octaves, latch); invalid or hand-edited values fall back to defaults.
 - One-shot read-only import from legacy `guitarsuite-magicbeatz`, never
   writes back.

@@ -257,7 +257,7 @@ export function playDrumSample(kitId, voiceId, when, velocity = 0.8) {
 }
 
 /** Start a sampled sustain (keyboard hold). Returns stop fn or null. */
-export function startSampleSustain(id, pitch, octave, velocity = 0.85) {
+export function startSampleSustain(id, pitch, octave, velocity = 0.85, when) {
   const entry = instances.get(canonicalId(id));
   if (!entry) {
     ensureSample(id);
@@ -266,10 +266,62 @@ export function startSampleSustain(id, pitch, octave, velocity = 0.85) {
   const midi = midiFor(pitch, octave);
   if (midi == null) return null;
   try {
-    const stop = entry.inst.start({ note: midi, velocity: Math.round(velocity * 127) });
+    const { time } = scheduleTime(when);
+    const stop = entry.inst.start({ note: midi, velocity: Math.round(velocity * 127), time });
     return typeof stop === 'function' ? stop : null;
   } catch {
     return null;
+  }
+}
+
+let stepVoiceSeq = 0;
+
+/**
+ * smplr note event for one gated performance step.
+ * `duration` makes smplr stop the voice on the audio clock; `ampRelease` keeps
+ * the fade short so the note clears before the next retrigger (presets default
+ * to 300 ms, which smeared repeats into one long tone). `stopId` is unique per
+ * step because smplr's stop fn stops *every* voice sharing an id — including a
+ * later step already scheduled inside the lookahead window.
+ */
+function clampNum(value, min, max, fallback) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(max, Math.max(min, n));
+}
+
+export function buildSampleStepEvent({ midi, velocity = 0.85, time, gateSec = 0.12, releaseSec = 0.03, seq = 1 }) {
+  return {
+    note: midi,
+    velocity: Math.round(clampNum(velocity, 0, 1, 0.85) * 127),
+    time,
+    duration: clampNum(gateSec, 0.02, 8, 0.12),
+    ampRelease: clampNum(releaseSec, 0.005, 0.2, 0.03),
+    stopId: `step:${seq}`,
+  };
+}
+
+/**
+ * Gated sampled performance step (note repeat / arpeggiator).
+ * @returns {boolean} true when the sample was ready and the step scheduled
+ */
+export function playSampleStep(id, pitch, octave, when, velocity = 0.85, gateSec = 0.12, releaseSec = 0.03) {
+  const entry = instances.get(canonicalId(id));
+  if (!entry) {
+    ensureSample(id);
+    return false;
+  }
+  const midi = midiFor(pitch, octave);
+  if (midi == null) return false;
+  try {
+    const { time } = scheduleTime(when);
+    stepVoiceSeq += 1;
+    entry.inst.start(buildSampleStepEvent({
+      midi, velocity, time, gateSec, releaseSec, seq: stepVoiceSeq,
+    }));
+    return true;
+  } catch {
+    return false;
   }
 }
 

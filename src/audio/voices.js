@@ -5,7 +5,7 @@
 import { getAudioContext, getMasterBus, peekAudioContext } from './context.js';
 import { pitchToIndex } from '../theory/music.js';
 import { resolveInstrument, INSTRUMENTS } from './instruments.js';
-import { playSample, startSampleSustain, stopSampleSustain } from './sampler.js';
+import { playSample, playSampleStep, startSampleSustain, stopSampleSustain } from './sampler.js';
 
 function connectVoice(gainNode) {
   gainNode.connect(getMasterBus());
@@ -666,12 +666,13 @@ function sustainKey(instrumentId, pitch, octave) {
 
 /**
  * Start a gated sustained note (hold until stopPitchedSustain).
+ * `when` schedules the start on the audio clock (performance clock lookahead).
  * Returns key string, or null if one-shot was used instead.
  */
-export function startPitchedSustain(instrumentId, pitch, octave, velocity = 0.85) {
+export function startPitchedSustain(instrumentId, pitch, octave, velocity = 0.85, when) {
   const resolved = resolveInstrument(instrumentId || 'grand');
   if (resolved.engine === 'sample') {
-    const stopSample = startSampleSustain(resolved.id, pitch, octave, velocity);
+    const stopSample = startSampleSustain(resolved.id, pitch, octave, velocity, when);
     if (!stopSample) return null; // still loading — stay silent, UI shows state
     const key = `sample|${resolved.id}|${pitch}|${octave}|${Date.now().toString(36)}`;
     sampleSustains.set(key, stopSample);
@@ -690,7 +691,7 @@ export function startPitchedSustain(instrumentId, pitch, octave, velocity = 0.85
   stopPitchedSustain(key);
 
   const ctx = getAudioContext();
-  const t = ctx.currentTime;
+  const t = Math.max(ctx.currentTime, Number.isFinite(when) ? when : ctx.currentTime);
   const g = velGain(velocity, id === 'strings' || id === 'keys-pad' ? 0.12 : 0.2);
   const nodes = [];
   const gains = [];
@@ -795,8 +796,9 @@ function sustainVoiceSpecs(id, freq) {
 
 const sampleSustains = new Map();
 
-export function stopPitchedSustain(key) {
+export function stopPitchedSustain(key, releaseSec = 0.08) {
   if (!key) return;
+  const rel = Math.min(0.4, Math.max(0.01, Number(releaseSec) || 0.08));
   if (sampleSustains.has(key)) {
     stopSampleSustain(sampleSustains.get(key));
     sampleSustains.delete(key);
@@ -811,7 +813,7 @@ export function stopPitchedSustain(key) {
     try {
       gain.gain.cancelScheduledValues(t);
       gain.gain.setValueAtTime(Math.max(0.001, gain.gain.value), t);
-      gain.gain.exponentialRampToValueAtTime(0.001, t + 0.08);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + rel);
     } catch { /* ignore */ }
   }
   window.setTimeout(() => {
@@ -821,10 +823,11 @@ export function stopPitchedSustain(key) {
         if (typeof node.disconnect === 'function') node.disconnect();
       } catch { /* ignore */ }
     }
-  }, 100);
+  }, Math.round(rel * 1000) + 20);
 }
 
 export function stopAllPitchedSustain() {
+  releaseStepGates();
   for (const key of [...sampleSustains.keys()]) stopPitchedSustain(key);
   for (const key of [...activeSustains.keys()]) stopPitchedSustain(key);
 }
@@ -847,6 +850,56 @@ export function playPitchedInstrument(instrumentId, pitch, octave, when, velocit
   }
   const play = PITCHED_PLAYERS[resolved.id];
   if (play) play(pitch, octave, when, velocity);
+}
+
+/** Newest step owns each synth sustain key (a stale gate must not cut it). */
+const stepSustainTokens = new Map();
+
+/**
+ * Forget pending step gates. Call when leaving repeat/arp so a scheduled gate
+ * can never release a note that has since become a normal held sustain.
+ */
+export function releaseStepGates() {
+  stepSustainTokens.clear();
+}
+
+/**
+ * Play one gated performance step (note repeat / arpeggiator).
+ *
+ * Every step is a fresh, short note that ends before the next one lands:
+ * sampled instruments stop on the audio clock inside smplr (`duration`), and
+ * synth voices that support sustain are opened then released after the gate.
+ * One-shot synth voices keep their own envelope, so overlapping steps never
+ * share a sustain handle.
+ *
+ * @returns {boolean} true when audio was actually scheduled (silent while loading)
+ */
+export function playPitchedStep(instrumentId, pitch, octave, when, velocity = 0.85, gateSec = 0.12) {
+  const resolved = resolveInstrument(instrumentId);
+  const requested = Number(gateSec);
+  const gate = Math.min(8, Math.max(0.02, Number.isFinite(requested) ? requested : 0.12));
+  if (resolved.engine === 'sample') {
+    // Short fade so the tail clears before the next hit (preset release is 300 ms).
+    return playSampleStep(resolved.id, pitch, octave, when, velocity, gate, Math.min(0.04, gate * 0.25));
+  }
+  const id = resolved.id;
+  if (!SUSTAIN_INSTRUMENTS.has(id)) {
+    playPitchedInstrument(id, pitch, octave, when, velocity);
+    return true;
+  }
+  const key = startPitchedSustain(id, pitch, octave, velocity, when);
+  if (!key) return false;
+  const token = {};
+  stepSustainTokens.set(key, token);
+  const ctx = getAudioContext();
+  const startAt = Math.max(ctx.currentTime, Number.isFinite(when) ? when : ctx.currentTime);
+  const releaseSec = Math.min(0.08, gate * 0.5);
+  window.setTimeout(() => {
+    if (stepSustainTokens.get(key) !== token) return; // a newer step owns this voice
+    stepSustainTokens.delete(key);
+    stopPitchedSustain(key, releaseSec);
+  }, Math.max(0, (startAt + gate - ctx.currentTime) * 1000));
+  return true;
 }
 
 /**

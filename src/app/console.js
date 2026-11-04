@@ -21,7 +21,8 @@ import { createStepTransport } from '../sequencer/transport.js';
 import { playChannelHit } from '../audio/banks.js';
 import { playPercussionVoice, PERCUSSION_BANK } from '../audio/percussion.js';
 import {
-  playPitchedInstrument, playPitchedChord, startPitchedSustain, stopPitchedSustain,
+  playPitchedInstrument, playPitchedChord, playPitchedStep,
+  startPitchedSustain, stopPitchedSustain, releaseStepGates,
   setStickBendCents, setStickVibrato,
 } from '../audio/voices.js';
 import { chordEntriesFor, chordNameOptions } from '../theory/chords.js';
@@ -58,6 +59,10 @@ import {
 } from '../audio/sampler.js';
 import { openSoundBrowser, openKitBrowser } from './sound-browser.js';
 import { openTrackPopover, refreshTrackPopover, closeTrackPopover } from './track-popover.js';
+import {
+  ARP_GATE, REPEAT_GATE, buildArpSequence, createPerformClock,
+  normalizePerformPrefs, performStatusLabel, rateSeconds,
+} from '../keys/perform.js';
 
 /** Standalone asset fetch: ./assets next to index.html. */
 function mbzAsset(path) {
@@ -91,6 +96,8 @@ let keysInstrumentId = DEFAULT_KEYS_INSTRUMENT;
 
 const KEYS_INST_STORAGE = 'magicbeatz-keys-inst-v1';
 const KEYS_CURVE_STORAGE = 'magicbeatz-keys-curve-v1';
+const KEYS_PERFORM_STORAGE = 'magicbeatz-keys-perform-v1';
+let keysPerform = loadKeysPerformPref();
 function loadKeysInstrumentPref() {
   try { return localStorage.getItem(KEYS_INST_STORAGE) || ''; } catch { return ''; }
 }
@@ -102,6 +109,17 @@ function loadKeysCurvePref() {
 }
 function saveKeysCurvePref(curve) {
   try { if (curve) localStorage.setItem(KEYS_CURVE_STORAGE, curve); } catch { /* ignore */ }
+}
+function loadKeysPerformPref() {
+  try {
+    const raw = localStorage.getItem(KEYS_PERFORM_STORAGE);
+    return normalizePerformPrefs(raw ? JSON.parse(raw) : null);
+  } catch {
+    return normalizePerformPrefs(null);
+  }
+}
+function saveKeysPerformPref(prefs) {
+  try { localStorage.setItem(KEYS_PERFORM_STORAGE, JSON.stringify(prefs)); } catch { /* ignore */ }
 }
 // Session — clip launcher + arrangement timeline (live looper / song mode).
 let queuedPatternId = null; // clip waiting to start at the next bar boundary
@@ -157,6 +175,15 @@ const keysInst = $('[data-keys-inst]');
 const kitABtn = $('[data-kit-a]');
 const kitBBtn = $('[data-kit-b]');
 const keysCurveSel = $('[data-keys-curve]');
+const keysRepeatBtn = $('[data-keys-repeat]');
+const repeatRateSel = $('[data-repeat-rate]');
+const keysArpBtn = $('[data-keys-arp]');
+const arpModeSel = $('[data-arp-mode]');
+const arpRateSel = $('[data-arp-rate]');
+const arpOctavesSel = $('[data-arp-octaves]');
+const arpLatchInput = $('[data-arp-latch]');
+const perfDrawerEl = $('[data-perf-drawer]');
+const perfStateEl = $('[data-perf-state]');
 const padEditorsEl = $('[data-pad-editors]');
 const midiMonitorEl = $('[data-midi-monitor]');
 const fxFilter = $('[data-fx-filter]');
@@ -192,6 +219,18 @@ const patternRenBtn = $('[data-pattern-ren]');
 const patternDelBtn = $('[data-pattern-del]');
 const heldKeys = new Map();
 const heldPc = new Set();
+
+// ---------- note repeat + arpeggiator ----------
+const performHolds = new Map(); // holdId -> { pitch, octave, velocity, order }
+let performOrder = 0;
+let latchedArpNotes = [];
+let performIndex = 0;
+let arpCache = { key: '', seq: [] };
+const performClock = createPerformClock({
+  getBpm: () => getBpm(),
+  getRateId: () => (keysPerform.arp.enabled ? keysPerform.arp.rate : keysPerform.repeat.rate),
+  onStep: (when) => performStep(when),
+});
 
 /** Last raw MIDI messages (newest first, max 5) for the monitor row. */
 const midiLog = [];
@@ -607,14 +646,28 @@ function auditionPad(bankId, padNum, velocity = 0.85) {
 
 function auditionKey(pitch, octave, holdId, velocity) {
   if (!audition) return;
-  if (heldKeys.has(holdId)) return;
+  if (heldKeys.has(holdId) || performHolds.has(holdId)) return;
   ensureAudio();
   flushPendingLoads();
   const inst = keysInstrumentId;
   const vel = applyCurve(velocity ?? 0.85, keysCurve);
-  if (capturing) recordBuffer.push({ kind: 'key', pitch, octave, instrumentId: inst, t: getAudioContext().currentTime, velocity: vel });
   const btn = keyboardEl.querySelector(`.mbz-key[data-pitch="${pitch}"][data-octave="${octave}"]`);
   btn?.classList.add('is-down');
+  if (keysPerform.repeat.enabled || keysPerform.arp.enabled) {
+    // Latch accumulates the chord as it is pressed; the first press after all
+    // keys were released starts a new chord.
+    if (keysPerform.arp.enabled && keysPerform.arp.latch) {
+      if (performHolds.size === 0) latchedArpNotes = [];
+      if (!latchedArpNotes.some((n) => n.pitch === pitch && n.octave === octave)) {
+        latchedArpNotes.push({ pitch, octave, velocity: vel });
+      }
+    }
+    performHolds.set(holdId, { pitch, octave, velocity: vel, order: performOrder });
+    performOrder += 1;
+    refreshPerformClock();
+    return;
+  }
+  if (capturing) recordBuffer.push({ kind: 'key', pitch, octave, instrumentId: inst, t: getAudioContext().currentTime, velocity: vel });
   const sustain = startPitchedSustain(inst, pitch, octave, vel);
   heldKeys.set(holdId, sustain || null);
   if (!sustain) {
@@ -627,6 +680,160 @@ function auditionKey(pitch, octave, holdId, velocity) {
       }
     }, 160);
   }
+}
+
+// ---------- note repeat + arpeggiator helpers ----------
+function performHeldNotes() {
+  return [...performHolds.values()].sort((a, b) => a.order - b.order);
+}
+
+/** Arp chord: physically held keys win, latch keeps the last chord alive. */
+function activeArpNotes() {
+  const held = performHeldNotes();
+  return held.length ? held : latchedArpNotes;
+}
+
+function arpSequence(notes) {
+  const key = [
+    keysPerform.arp.mode,
+    keysPerform.arp.octaves,
+    notes.map((n) => `${n.pitch}${n.octave}`).join(','),
+  ].join('|');
+  if (arpCache.key !== key) {
+    arpCache = {
+      key,
+      seq: buildArpSequence(notes, { mode: keysPerform.arp.mode, octaves: keysPerform.arp.octaves }),
+    };
+    performIndex = 0;
+  }
+  return arpCache.seq;
+}
+
+function flashPerformKey(note, gateSec) {
+  const btn = keyboardEl.querySelector(`.mbz-key[data-pitch="${note.pitch}"][data-octave="${note.octave}"]`);
+  if (!btn) return;
+  btn.classList.add('is-arp');
+  window.setTimeout(() => btn.classList.remove('is-arp'), Math.max(70, Math.round(gateSec * 1000)));
+}
+
+function firePerformNote(note, when, gateSec) {
+  const velocity = note.velocity ?? 0.85;
+  if (capturing) {
+    recordBuffer.push({
+      kind: 'key', pitch: note.pitch, octave: note.octave,
+      instrumentId: keysInstrumentId, t: when, velocity,
+    });
+  }
+  playPitchedStep(keysInstrumentId, note.pitch, note.octave, when, velocity, gateSec);
+  flashPerformKey(note, gateSec);
+}
+
+function performStep(when) {
+  if (!audition) return;
+  const arpOn = keysPerform.arp.enabled;
+  if (!arpOn && !keysPerform.repeat.enabled) {
+    stopPerform({ clearLatch: false });
+    return;
+  }
+  const notes = arpOn ? activeArpNotes() : performHeldNotes();
+  if (!notes.length) {
+    stopPerform({ clearLatch: false });
+    return;
+  }
+  const stepSec = rateSeconds(arpOn ? keysPerform.arp.rate : keysPerform.repeat.rate, getBpm());
+  if (arpOn) {
+    const seq = arpSequence(notes);
+    if (!seq.length) return;
+    const note = seq[performIndex % seq.length];
+    performIndex = (performIndex + 1) % seq.length;
+    firePerformNote(note, when, stepSec * ARP_GATE);
+    return;
+  }
+  const gateSec = stepSec * REPEAT_GATE;
+  for (const note of notes) firePerformNote(note, when, gateSec);
+}
+function stopPerform({ clearLatch = true } = {}) {
+  performClock.stop();
+  performIndex = 0;
+  arpCache = { key: '', seq: [] };
+  if (clearLatch) latchedArpNotes = [];
+}
+
+function refreshPerformClock() {
+  if (!audition || (!keysPerform.repeat.enabled && !keysPerform.arp.enabled)) {
+    stopPerform({ clearLatch: false });
+    return;
+  }
+  const notes = keysPerform.arp.enabled ? activeArpNotes() : performHeldNotes();
+  if (!notes.length) {
+    stopPerform({ clearLatch: false });
+    return;
+  }
+  if (!performClock.isRunning()) performClock.start();
+}
+
+/** Turning both toggles off keeps held keys sounding as normal sustains. */
+function flushPerformHoldsToSustain() {
+  if (!performHolds.size) return;
+  const holds = [...performHolds];
+  performHolds.clear();
+  // A pending step gate must not release the held note we are about to start.
+  releaseStepGates();
+  if (!audition) return;
+  ensureAudio();
+  for (const [holdId, note] of holds) {
+    const sustain = startPitchedSustain(keysInstrumentId, note.pitch, note.octave, note.velocity);
+    heldKeys.set(holdId, sustain || null);
+  }
+}
+
+/**
+ * Reflect prefs in the drawer. `revealActive` opens the drawer at boot so a
+ * restored repeat/arp setting is visible instead of hidden behind a summary.
+ */
+function syncPerformControls({ revealActive = false } = {}) {
+  const active = keysPerform.repeat.enabled || keysPerform.arp.enabled;
+  if (keysRepeatBtn) {
+    keysRepeatBtn.classList.toggle('is-on', keysPerform.repeat.enabled);
+    keysRepeatBtn.setAttribute('aria-pressed', String(keysPerform.repeat.enabled));
+  }
+  if (keysArpBtn) {
+    keysArpBtn.classList.toggle('is-on', keysPerform.arp.enabled);
+    keysArpBtn.setAttribute('aria-pressed', String(keysPerform.arp.enabled));
+  }
+  if (repeatRateSel) repeatRateSel.value = keysPerform.repeat.rate;
+  if (arpModeSel) arpModeSel.value = keysPerform.arp.mode;
+  if (arpRateSel) arpRateSel.value = keysPerform.arp.rate;
+  if (arpOctavesSel) arpOctavesSel.value = String(keysPerform.arp.octaves);
+  if (arpLatchInput) arpLatchInput.checked = keysPerform.arp.latch;
+  if (perfStateEl) perfStateEl.textContent = performStatusLabel(keysPerform);
+  if (perfDrawerEl) {
+    perfDrawerEl.classList.toggle('is-active', active);
+    if (revealActive && active) perfDrawerEl.open = true;
+  }
+}
+
+/** Repeat and arp are mutually exclusive: enabling one disables the other. */
+function setPerformMode({ repeat, arp }) {
+  if (repeat != null) {
+    keysPerform.repeat.enabled = !!repeat;
+    if (repeat) keysPerform.arp.enabled = false;
+  }
+  if (arp != null) {
+    keysPerform.arp.enabled = !!arp;
+    if (arp) keysPerform.repeat.enabled = false;
+  }
+  saveKeysPerformPref(keysPerform);
+  syncPerformControls();
+  if (!keysPerform.arp.enabled) latchedArpNotes = [];
+  performIndex = 0;
+  arpCache = { key: '', seq: [] };
+  if (!keysPerform.repeat.enabled && !keysPerform.arp.enabled) {
+    flushPerformHoldsToSustain();
+    stopPerform({ clearLatch: false });
+    return;
+  }
+  refreshPerformClock();
 }
 
 function clearKeyHighlight(holdId) {
@@ -652,6 +859,13 @@ function clearKeyHighlight(holdId) {
 }
 
 function releaseKey(holdId) {
+  if (performHolds.has(holdId)) {
+    // Latch already holds the full chord, so the run keeps going on its own.
+    performHolds.delete(holdId);
+    clearKeyHighlight(holdId);
+    refreshPerformClock();
+    return;
+  }
   const sk = heldKeys.get(holdId);
   if (sk) {
     try { stopPitchedSustain(sk); } catch { /* ignore */ }
@@ -694,6 +908,12 @@ function renderKeyboard() {
     const holdId = `ptr:${pitch}|${octave}`;
     wirePressRelease(btn, holdId, () => auditionKey(pitch, octave, holdId, 0.85));
     keyboardEl.appendChild(btn);
+  }
+  // Re-apply held performance keys after a re-render (octave shift while holding).
+  for (const note of performHolds.values()) {
+    keyboardEl
+      .querySelector(`.mbz-key[data-pitch="${note.pitch}"][data-octave="${note.octave}"]`)
+      ?.classList.add('is-down');
   }
 }
 
@@ -1646,6 +1866,75 @@ function deleteActivePattern() {
   refreshPatternViews();
 }
 
+/** Last rendered 0..1 value for a knob (drag origin). */
+function knobNorm(knobId) {
+  return Math.min(1, Math.max(0, knobUiNorm[knobId] ?? 0));
+}
+
+/**
+ * Mouse / touch / wheel / keyboard "turning" for one knob dial.
+ *
+ * Writes through applyKnobDrag() — the exact path MIDI CC uses (curve ->
+ * binding window -> desc.set), so hardware and UI never drift. A click is
+ * not an assign shortcut: assignment lives on the card's `assign` button.
+ * Shift = fine, wheel = 3% per notch, arrows = 5%, Home/End = ends.
+ */
+function wireKnobDial(dial, knobId) {
+  const FULL_TRAVEL_PX = 170; // vertical drag for a full 0..1 sweep
+  let dragPointer = null;
+  let dragStartY = 0;
+  let dragStartNorm = 0;
+
+  const apply = (norm) => applyKnobDrag(knobId, Math.min(1, Math.max(0, norm)));
+
+  const endDrag = (e) => {
+    if (dragPointer == null) return;
+    if (e && e.pointerId != null && e.pointerId !== dragPointer) return;
+    dragPointer = null;
+    dial.classList.remove('is-dragging');
+  };
+
+  dial.addEventListener('pointerdown', (e) => {
+    if (e.button) return; // left button / touch / pen only
+    e.preventDefault();
+    dragPointer = e.pointerId;
+    dragStartY = e.clientY;
+    dragStartNorm = knobNorm(knobId);
+    dial.classList.add('is-dragging');
+    // preventDefault() above suppresses focus, so claim it explicitly:
+    // click a dial then use the arrow keys, same as a hardware knob.
+    try { dial.focus({ preventScroll: true }); } catch { /* ignore */ }
+    try { dial.setPointerCapture(e.pointerId); } catch { /* drag still works */ }
+  });
+  dial.addEventListener('pointermove', (e) => {
+    if (dragPointer == null || e.pointerId !== dragPointer) return;
+    e.preventDefault();
+    const span = FULL_TRAVEL_PX * (e.shiftKey ? 4 : 1);
+    apply(dragStartNorm + (dragStartY - e.clientY) / span);
+  });
+  dial.addEventListener('pointerup', endDrag);
+  dial.addEventListener('pointercancel', endDrag);
+  dial.addEventListener('lostpointercapture', endDrag);
+  dial.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    const step = e.shiftKey ? 0.01 : 0.03;
+    apply(knobNorm(knobId) - Math.sign(e.deltaY) * step);
+  }, { passive: false });
+  dial.addEventListener('keydown', (e) => {
+    const cur = knobNorm(knobId);
+    const step = e.shiftKey ? 0.01 : 0.05;
+    const next = {
+      ArrowUp: cur + step, ArrowRight: cur + step,
+      ArrowDown: cur - step, ArrowLeft: cur - step,
+      PageUp: cur + 0.2, PageDown: cur - 0.2,
+      Home: 0, End: 1,
+    }[e.key];
+    if (next == null) return;
+    e.preventDefault();
+    apply(next);
+  });
+}
+
 function renderKnobs() {
   knobsEl.innerHTML = '';
   const conflicts = knobConflicts(knobMap);
@@ -1672,8 +1961,15 @@ function renderKnobs() {
     const dial = document.createElement('div');
     dial.className = 'mbz-knob-dial';
     dial.style.setProperty('--v', norm.toFixed(3));
-    dial.title = `${knob.id} · CC ${knob.cc} · ${desc ? desc.label : 'unmapped'} · ${valText}`;
-    dial.addEventListener('click', () => openKnobPopover(knob.id));
+    dial.title = `${knob.id} · CC ${knob.cc} · ${desc ? desc.label : 'unmapped'} · ${valText} — drag to turn`;
+    dial.tabIndex = 0;
+    dial.setAttribute('role', 'slider');
+    dial.setAttribute('aria-label', `${knob.id} — ${desc ? desc.label : 'unmapped'}`);
+    dial.setAttribute('aria-valuemin', '0');
+    dial.setAttribute('aria-valuemax', '100');
+    dial.setAttribute('aria-valuenow', String(Math.round(norm * 100)));
+    dial.setAttribute('aria-valuetext', valText);
+    wireKnobDial(dial, knob.id);
     wrap.appendChild(dial);
     const title = document.createElement('b');
     title.innerHTML = `<span class="mbz-knob-dot"></span>${esc(knob.id)}`;
@@ -1684,6 +1980,7 @@ function renderKnobs() {
     wrap.appendChild(tgt);
     const valEl = document.createElement('small');
     valEl.className = 'mbz-knob-val';
+    valEl.dataset.knobVal = '';
     valEl.textContent = valText;
     wrap.appendChild(valEl);
     const ccEl = document.createElement('small');
@@ -2032,6 +2329,7 @@ function paintKnobArc(knobId, { norm, stale, waiting, unmapped } = {}) {
     dial.classList.toggle('is-waiting', !!waiting);
     dial.classList.toggle('is-stale', !!stale);
     dial.classList.toggle('is-unmapped', !!unmapped || !desc);
+    dial.setAttribute('aria-valuenow', String(Math.round(n * 100)));
   }
   if (valEl) {
     if (!desc || unmapped) valEl.textContent = '—';
@@ -2039,6 +2337,7 @@ function paintKnobArc(knobId, { norm, stale, waiting, unmapped } = {}) {
       const live = (() => { try { return desc.get(); } catch { return null; } })();
       valEl.textContent = live == null ? '—' : desc.format(live);
     }
+    dial?.setAttribute('aria-valuetext', valEl.textContent);
   }
 }
 
@@ -2600,6 +2899,8 @@ document.querySelector('[data-bank-b]').addEventListener('click', () => {
 document.querySelector('[data-audition]').addEventListener('click', (e) => {
   audition = !audition;
   e.currentTarget.classList.toggle('is-on', audition);
+  if (audition) refreshPerformClock();
+  else stopPerform();
 });
 document.querySelector('[data-capture]').addEventListener('click', (e) => {
   capturing = !capturing;
@@ -2658,6 +2959,45 @@ document.querySelector('[data-grid-reset]').addEventListener('click', () => {
 keysCurveSel.addEventListener('change', () => {
   keysCurve = keysCurveSel.value;
   saveKeysCurvePref(keysCurve);
+});
+
+// Note repeat + arpeggiator controls (prefs persist across reloads).
+keysRepeatBtn?.addEventListener('click', () => setPerformMode({ repeat: !keysPerform.repeat.enabled }));
+keysArpBtn?.addEventListener('click', () => setPerformMode({ arp: !keysPerform.arp.enabled }));
+repeatRateSel?.addEventListener('change', () => {
+  keysPerform.repeat.rate = repeatRateSel.value;
+  saveKeysPerformPref(keysPerform);
+});
+arpRateSel?.addEventListener('change', () => {
+  keysPerform.arp.rate = arpRateSel.value;
+  saveKeysPerformPref(keysPerform);
+});
+arpModeSel?.addEventListener('change', () => {
+  keysPerform.arp.mode = arpModeSel.value;
+  arpCache = { key: '', seq: [] };
+  performIndex = 0;
+  saveKeysPerformPref(keysPerform);
+});
+arpOctavesSel?.addEventListener('change', () => {
+  keysPerform.arp.octaves = Math.min(3, Math.max(1, parseInt(arpOctavesSel.value, 10) || 1));
+  arpCache = { key: '', seq: [] };
+  performIndex = 0;
+  saveKeysPerformPref(keysPerform);
+});
+arpLatchInput?.addEventListener('change', () => {
+  keysPerform.arp.latch = arpLatchInput.checked;
+  if (!keysPerform.arp.latch) latchedArpNotes = [];
+  saveKeysPerformPref(keysPerform);
+  refreshPerformClock();
+});
+
+// Never leave performance notes running when the tab loses focus.
+window.addEventListener('blur', () => {
+  if (!performHolds.size && !latchedArpNotes.length) return;
+  for (const holdId of [...performHolds.keys()]) clearKeyHighlight(holdId);
+  performHolds.clear();
+  heldPc.clear();
+  stopPerform();
 });
 
 // Computer keyboard: A = C at visible base (ported from suite dock map).
@@ -2774,6 +3114,7 @@ const prefInst = loadKeysInstrumentPref();
 if (prefInst) keysInstrumentId = resolveInstrument(prefInst).id;
 const prefCurve = loadKeysCurvePref();
 if (prefCurve) { keysCurve = prefCurve; keysCurveSel.value = prefCurve; }
+syncPerformControls({ revealActive: true });
 
 syncControlsFromProject();
 renderGrid();

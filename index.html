@@ -32,10 +32,18 @@
     </header>
 
     <main class="mbz-console" aria-label="MPK mini console">
-      <section class="mbz-row mbz-row--knobs" aria-label="Knobs, stick and control">
+      <section class="mbz-row mbz-row--knobs" aria-label="Knobs, stick and monitor">
         <div class="mbz-block">
-          <h2>knobs <span class="mbz-hint">K1–K8 · click = assign · learn = MIDI CC</span></h2>
+          <h2>knobs <span class="mbz-hint">K1–K8 · drag = turn · shift = fine · assign = map</span></h2>
           <div class="mbz-knobs" data-knobs></div>
+          <div class="mbz-fx-strip" aria-label="Master FX">
+            <h3>fx <span class="mbz-hint">master chain · same params as knobs</span></h3>
+            <div class="mbz-fx-grid">
+              <label>filter <input type="range" data-fx-filter min="0" max="100" value="100"><span data-fx-filter-val>18.0kHz</span></label>
+              <label>delay <input type="range" data-fx-delay min="0" max="100" value="0"><span data-fx-delay-val>0%</span></label>
+              <label>verb <input type="range" data-fx-verb min="0" max="100" value="0"><span data-fx-verb-val>0%</span></label>
+            </div>
+          </div>
         </div>
         <div class="mbz-block mbz-joystick-block">
           <h2>stick <span class="mbz-hint">X bend · Y mod · drag works w/o hw</span></h2>
@@ -57,34 +65,22 @@
           </div>
           <p class="mbz-note" data-stick-hint>hw silent? drag the dot or sliders — same targets.</p>
         </div>
-        <div class="mbz-block">
-          <h2>control <span class="mbz-hint">audition · capture</span></h2>
-          <div class="mbz-control-grid">
-            <button type="button" class="mbz-btn" data-oct-down title="Octave down">oct −</button>
-            <span class="mbz-oct-label" data-oct-label>oct 3</span>
-            <button type="button" class="mbz-btn" data-oct-up title="Octave up">oct +</button>
-            <button type="button" class="mbz-btn is-active" data-bank-a title="Pad bank A">A</button>
-            <button type="button" class="mbz-btn" data-bank-b title="Pad bank B">B</button>
-            <button type="button" class="mbz-btn is-on" data-audition title="Audition on/off">listen</button>
-            <button type="button" class="mbz-btn" data-capture title="Capture pads+keys into grid">capture</button>
-          </div>
-          <p class="mbz-note">pads + keys live in parallel. capture writes into the active clip.</p>
+        <div class="mbz-block mbz-monitor-block">
+          <h2>monitor <span class="mbz-hint">audition · status</span></h2>
+          <button type="button" class="mbz-btn is-on" data-audition title="Audition — hear pads &amp; keys from hardware or mouse">audition</button>
+          <p class="mbz-note">pads + keys live in parallel · ⏺ in the transport records into the active clip.</p>
           <p class="mbz-note mbz-status-line" data-project-note>project: magicbeatz-v3</p>
           <p class="mbz-note mbz-status-line" data-midi-monitor title="Last raw MIDI message — tap hardware to see its channel + note">midi: —</p>
-          <div class="mbz-fx-strip" aria-label="Master FX">
-            <h3>fx <span class="mbz-hint">master chain · same params as knobs</span></h3>
-            <div class="mbz-fx-grid">
-              <label>filter <input type="range" data-fx-filter min="0" max="100" value="100"><span data-fx-filter-val>18.0kHz</span></label>
-              <label>delay <input type="range" data-fx-delay min="0" max="100" value="0"><span data-fx-delay-val>0%</span></label>
-              <label>verb <input type="range" data-fx-verb min="0" max="100" value="0"><span data-fx-verb-val>0%</span></label>
-            </div>
-          </div>
         </div>
       </section>
 
       <section class="mbz-row mbz-row--perf" aria-label="Pads and keys">
         <div class="mbz-block mbz-pads-block">
-          <h2>pads <span class="mbz-hint">Bank <b data-bank-label>A</b> · tap = play · gear = map</span></h2>
+          <h2>pads <span class="mbz-hint">Bank <b data-bank-label>A</b> · tap = play</span></h2>
+          <div class="mbz-bank-row" role="group" aria-label="Pad bank">
+            <button type="button" class="mbz-btn is-active" data-bank-a title="Pad bank A">A</button>
+            <button type="button" class="mbz-btn" data-bank-b title="Pad bank B">B</button>
+          </div>
           <div class="mbz-pad-kits" aria-label="Drum kit per pad bank">
             <button type="button" class="mbz-sound-btn" data-kit-a aria-haspopup="dialog" title="Choose the drum kit for bank A"></button>
             <button type="button" class="mbz-sound-btn" data-kit-b aria-haspopup="dialog" title="Choose the drum kit for bank B"></button>
@@ -107,8 +103,66 @@
                 <option value="fixed">fixed</option>
               </select>
             </label>
+            <span class="mbz-keys-oct" role="group" aria-label="Keyboard octave">
+              <button type="button" class="mbz-btn" data-oct-down title="Octave down">oct −</button>
+              <span class="mbz-oct-label" data-oct-label>oct 3</span>
+              <button type="button" class="mbz-btn" data-oct-up title="Octave up">oct +</button>
+            </span>
           </div>
           <div class="mbz-keyboard" data-keyboard aria-label="Piano keyboard"></div>
+          <details class="mbz-perf-drawer" data-perf-drawer>
+            <summary class="mbz-perf-summary">
+              <span class="mbz-perf-label">repeat / arp</span>
+              <span class="mbz-hint">hold to retrigger · chord arp</span>
+              <span class="mbz-perf-state" data-perf-state>off</span>
+              <span class="mbz-perf-caret" aria-hidden="true">▸</span>
+            </summary>
+            <div class="mbz-perf-row">
+              <span class="mbz-perf-group" role="group" aria-label="Note repeat">
+                <button type="button" class="mbz-btn" data-keys-repeat aria-pressed="false" title="Note repeat — hold a key to retrigger it at the chosen rate">repeat</button>
+                <label>rate
+                  <select data-repeat-rate>
+                    <option value="1/4">1/4</option>
+                    <option value="1/8">1/8</option>
+                    <option value="1/8T">1/8T</option>
+                    <option value="1/16" selected>1/16</option>
+                    <option value="1/16T">1/16T</option>
+                    <option value="1/32">1/32</option>
+                  </select>
+                </label>
+              </span>
+              <span class="mbz-perf-sep" aria-hidden="true"></span>
+              <span class="mbz-perf-group" role="group" aria-label="Arpeggiator">
+                <button type="button" class="mbz-btn" data-keys-arp aria-pressed="false" title="Arpeggiator — hold a chord to cycle its notes">arp</button>
+                <label>mode
+                  <select data-arp-mode>
+                    <option value="up" selected>up</option>
+                    <option value="down">down</option>
+                    <option value="updown">up/down</option>
+                    <option value="random">random</option>
+                  </select>
+                </label>
+                <label>rate
+                  <select data-arp-rate>
+                    <option value="1/4">1/4</option>
+                    <option value="1/8">1/8</option>
+                    <option value="1/8T">1/8T</option>
+                    <option value="1/16" selected>1/16</option>
+                    <option value="1/16T">1/16T</option>
+                    <option value="1/32">1/32</option>
+                  </select>
+                </label>
+                <label>oct
+                  <select data-arp-octaves>
+                    <option value="1" selected>1</option>
+                    <option value="2">2</option>
+                    <option value="3">3</option>
+                  </select>
+                </label>
+                <label class="mbz-perf-check"><input type="checkbox" data-arp-latch> latch</label>
+              </span>
+            </div>
+          </details>
         </div>
       </section>
       <section class="mbz-row mbz-row--stage" aria-label="Transport, clips, grid and arrangement">
@@ -116,6 +170,7 @@
           <div class="mbz-transport-bar" aria-label="Transport">
             <button type="button" class="mbz-btn mbz-big" data-play title="Play">▶</button>
             <button type="button" class="mbz-btn mbz-big" data-stop title="Stop" disabled>■</button>
+            <button type="button" class="mbz-btn mbz-big mbz-rec" data-capture title="Record pads + keys into the active clip" aria-label="Record pads and keys">⏺</button>
             <label class="mbz-tb-field">BPM <input type="number" data-bpm value="120" min="30" max="250"></label>
             <label class="mbz-tb-field">swing <input type="range" data-swing min="0" max="100" value="0"><span data-swing-val>0%</span></label>
             <label class="mbz-tb-field">sig
@@ -210,10 +265,13 @@
         </div>
       </section>
       <section class="mbz-row mbz-row--map" aria-label="Pad mapping">
-        <div class="mbz-block mbz-map-block">
-          <h2>pad map <span class="mbz-hint">each pad = a tab: drum · note · chord</span></h2>
+        <details class="mbz-block mbz-map-block">
+          <summary class="mbz-map-summary">
+            <h2>pad map <span class="mbz-hint">each pad = a tab: drum · note · chord</span></h2>
+            <span class="mbz-map-caret" aria-hidden="true">▸</span>
+          </summary>
           <div class="mbz-pad-editors" data-pad-editors></div>
-        </div>
+        </details>
       </section>
     </main>
   </div>

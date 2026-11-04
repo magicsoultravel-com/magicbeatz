@@ -30,7 +30,7 @@ body {
 .mbz-console { display: grid; gap: 12px; }
 .mbz-row { display: grid; gap: 12px; grid-template-columns: 1fr; }
 @media (min-width: 980px) {
-  .mbz-row--knobs { grid-template-columns: 1.35fr 0.65fr 0.9fr; }
+  .mbz-row--knobs { grid-template-columns: 1.5fr 0.7fr 0.55fr; }
   .mbz-row--perf { grid-template-columns: 0.9fr 1.1fr; }
 }
 .mbz-block { background: linear-gradient(180deg, var(--mbz-panel-2), var(--mbz-panel)); border: 1px solid var(--mbz-line); border-radius: 14px; padding: 12px; }
@@ -40,11 +40,14 @@ body {
 .mbz-status-line { margin-top: 4px; font-variant-numeric: tabular-nums; }
 .mbz-knobs { display: grid; grid-template-columns: repeat(8, minmax(64px, 1fr)); gap: 8px; }
 .mbz-knob { background: var(--mbz-pad); border: 1px solid var(--mbz-line); border-radius: 12px; padding: 8px 6px; text-align: center; position: relative; }
-.mbz-knob-dial { width: 44px; height: 44px; border-radius: 50%; margin: 0 auto 6px; background: conic-gradient(var(--knob-group, var(--mbz-accent)) calc(var(--v, 0) * 1turn), #100e15 0); border: 2px solid #000; position: relative; cursor: pointer; }
+.mbz-knob-dial { width: 44px; height: 44px; border-radius: 50%; margin: 0 auto 6px; background: conic-gradient(var(--knob-group, var(--mbz-accent)) calc(var(--v, 0) * 1turn), #100e15 0); border: 2px solid #000; position: relative; cursor: grab; touch-action: none; user-select: none; -webkit-user-select: none; }
 .mbz-knob-dial::after { content: ""; position: absolute; left: 50%; top: 3px; width: 3px; height: 12px; background: #fff; border-radius: 2px; transform-origin: 50% 19px; transform: translateX(-50%) rotate(calc(var(--v, 0) * 270deg - 135deg)); }
 .mbz-knob-dial.is-waiting { outline: 2px dashed var(--mbz-accent-3); outline-offset: 2px; animation: mbz-pulse 0.8s infinite alternate; }
 .mbz-knob-dial.is-stale { opacity: 0.55; filter: saturate(0.4); }
 .mbz-knob-dial.is-unmapped { filter: grayscale(0.8); opacity: 0.6; }
+.mbz-knob-dial:focus-visible { outline: 2px solid var(--mbz-accent-3); outline-offset: 3px; }
+.mbz-knob-dial:active, .mbz-knob-dial.is-dragging { cursor: grabbing; }
+.mbz-knob-dial.is-dragging { box-shadow: 0 0 0 3px color-mix(in srgb, var(--knob-group, var(--mbz-accent)) 45%, transparent); }
 @keyframes mbz-pulse { from { outline-color: var(--mbz-accent-3); } to { outline-color: transparent; } }
 .mbz-knob b { display: flex; align-items: center; justify-content: center; gap: 5px; font-size: 12px; }
 .mbz-knob-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--knob-group, #8a8496); display: inline-block; }
@@ -192,8 +195,32 @@ body {
 .mbz-key.white { background: #f4f1ff; color: #333; min-width: 30px; height: 104px; }
 .mbz-key.black { background: #111; color: #bbb; min-width: 20px; height: 64px; margin: 0 -11px; z-index: 1; }
 .mbz-key.is-down { background: var(--mbz-accent-2); }
+.mbz-key.is-arp { background: var(--mbz-accent-3); }
+.mbz-perf-drawer { margin-top: 8px; border: 1px solid var(--mbz-line); border-radius: 10px; background: #121016; font-size: 12px; color: var(--mbz-dim); }
+.mbz-perf-summary { display: flex; align-items: center; gap: 10px; padding: 6px 10px; cursor: pointer; list-style: none; border-radius: 10px; }
+.mbz-perf-summary::-webkit-details-marker { display: none; }
+.mbz-perf-summary:focus-visible { outline: 2px solid var(--mbz-accent-3); outline-offset: 2px; }
+.mbz-perf-label { color: var(--mbz-text); font-weight: 600; letter-spacing: 0.02em; }
+.mbz-perf-state { font-variant-numeric: tabular-nums; }
+.mbz-perf-drawer.is-active .mbz-perf-state { color: var(--mbz-accent-2); }
+.mbz-perf-caret { margin-left: auto; color: var(--mbz-dim); line-height: 1; transition: transform 0.15s ease; }
+.mbz-perf-drawer[open] .mbz-perf-caret { transform: rotate(90deg); }
+.mbz-perf-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 0 10px 10px; }
+.mbz-perf-sep { width: 1px; align-self: stretch; min-height: 22px; background: var(--mbz-line); }
+.mbz-perf-group { display: inline-flex; align-items: center; gap: 8px; border: 1px solid var(--mbz-line); border-radius: 10px; padding: 3px 6px; background: #17141f; }
+.mbz-perf-group label { display: inline-flex; align-items: center; gap: 6px; }
+.mbz-perf-group select { background: #121016; color: var(--mbz-text); border: 1px solid var(--mbz-line); border-radius: 8px; padding: 4px 6px; font-size: 12px; }
+.mbz-perf-group .mbz-btn { padding: 4px 8px; font-size: 12px; border-radius: 7px; }
+.mbz-perf-check { cursor: pointer; }
 .mbz-pad-editors { display: grid; gap: 8px; grid-template-columns: 1fr; }
 @media (min-width: 980px) { .mbz-pad-editors { grid-template-columns: 1fr 1fr; } }
+.mbz-map-summary { display: flex; align-items: center; justify-content: space-between; gap: 10px; cursor: pointer; list-style: none; }
+.mbz-map-summary::-webkit-details-marker { display: none; }
+.mbz-map-summary h2 { margin: 0; }
+.mbz-map-caret { color: var(--mbz-dim); font-size: 12px; line-height: 1; transition: transform 0.15s ease; }
+.mbz-map-block[open] .mbz-map-caret { transform: rotate(90deg); }
+.mbz-map-block[open] .mbz-pad-editors { margin-top: 10px; }
+.mbz-map-summary:focus-visible { outline: 2px solid var(--mbz-accent-3); outline-offset: 4px; border-radius: 8px; }
 .mbz-pad-editor { border: 1px solid var(--mbz-line); border-radius: 10px; padding: 8px; background: #17141f; }
 .mbz-pad-editor h3 { margin: 0 0 8px; font-size: 13px; }
 .mbz-pad-editor .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
@@ -215,7 +242,9 @@ body {
 .mbz-stick-sliders { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 8px; }
 .mbz-stick-sliders label { display: grid; gap: 4px; font-size: 11px; color: var(--mbz-dim); }
 .mbz-stick-sliders input[type="range"] { width: 100%; accent-color: var(--mbz-accent-2); }
-.mbz-control-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; align-items: center; }
+.mbz-bank-row { display: flex; gap: 8px; margin-bottom: 10px; }
+.mbz-bank-row .mbz-btn { min-width: 46px; font-weight: 700; }
+.mbz-monitor-block > .mbz-btn { width: 100%; }
 .mbz-oct-label { text-align: center; font-size: 13px; }
 
 /* Session — clip launcher (Ableton Session View style) + arrangement timeline */
@@ -328,6 +357,9 @@ body {
 .mbz-btn:disabled { opacity: 0.45; cursor: default; }
 .mbz-btn.is-active, .mbz-btn.is-on { background: var(--mbz-accent-2); color: #08130d; border-color: transparent; }
 .mbz-btn.mbz-big { font-size: 18px; }
+.mbz-rec { color: var(--mbz-accent); }
+.mbz-rec.is-on { background: var(--mbz-accent); color: #1b0606; border-color: transparent; animation: mbz-rec-pulse 0.9s ease-in-out infinite alternate; }
+@keyframes mbz-rec-pulse { from { box-shadow: 0 0 0 rgba(255, 93, 93, 0); } to { box-shadow: 0 0 12px rgba(255, 93, 93, 0.8); } }
 .mbz-badge { color: var(--mbz-text); font-size: 12px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; border: 1px solid var(--mbz-line); border-radius: 999px; padding: 6px 12px; background: var(--mbz-panel); white-space: nowrap; }
 
 /* quick-link nav (console <-> cheat sheet) */
@@ -372,7 +404,10 @@ body {
 .mbz-sound-dot[data-state="error"] { background: var(--mbz-accent); }
 .mbz-keys-bar { align-items: center; flex-wrap: wrap; }
 .mbz-keys-bar label { display: inline-flex; align-items: center; gap: 8px; }
-.mbz-keys-bar .mbz-sound-btn { min-width: 230px; }
+.mbz-keys-bar .mbz-sound-btn { min-width: 170px; }
+.mbz-keys-oct { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--mbz-line); border-radius: 10px; padding: 3px 6px; background: #121016; }
+.mbz-keys-oct .mbz-btn { padding: 4px 8px; font-size: 12px; border-radius: 7px; }
+.mbz-keys-bar .mbz-oct-label { min-width: 60px; font-variant-numeric: tabular-nums; }
 .mbz-pad-kits { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 10px; }
 .mbz-pad-kits .mbz-sound-btn { width: 100%; }
 .mbz-pad-kits small { display: block; color: var(--mbz-dim); font-size: 10px; margin-top: 3px; }
@@ -458,4 +493,8 @@ body.mbz-browser-open { overflow: hidden; }
   .mbz-browser-detail { display: none; }
   .mbz-pad-kits { grid-template-columns: 1fr; }
   .mbz-keys-bar .mbz-sound-btn { min-width: 0; width: 100%; }
+  .mbz-perf-row { flex-direction: column; align-items: stretch; }
+  .mbz-perf-sep { display: none; }
+  .mbz-perf-summary .mbz-hint { display: none; }
+  .mbz-perf-group { flex-wrap: wrap; }
 }
