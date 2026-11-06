@@ -58,11 +58,14 @@ function normalizeNote(note) {
   const octave = Number(note.octave);
   if (!Number.isFinite(octave)) return null;
   const velocity = Number(note.velocity);
-  return {
+  const out = {
     pitch: note.pitch,
     octave,
     velocity: Number.isFinite(velocity) ? Math.min(1, Math.max(0, velocity)) : 0.85,
   };
+  // A note can carry its own instrument (chord pads feed the arp), so keep it.
+  if (typeof note.instrumentId === 'string' && note.instrumentId) out.instrumentId = note.instrumentId;
+  return out;
 }
 
 /**

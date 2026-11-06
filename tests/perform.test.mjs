@@ -145,3 +145,23 @@ test('performStatusLabel summarizes the collapsed drawer', () => {
     'arp · random · 1/16',
   );
 });
+
+test('arp notes keep the instrument they were played on', () => {
+  // A chord pad seeds the arp with its own instrument; the sequence must not
+  // strip it, or every arp note would record onto the keys sound instead.
+  const padChord = [
+    { pitch: 'C', octave: 4, instrumentId: 'keys-pluck' },
+    { pitch: 'G', octave: 4, instrumentId: 'keys-pluck' },
+  ];
+  const seq = buildArpSequence(padChord, { mode: 'up', octaves: 2 });
+  assert.deepEqual(seq.map((n) => `${n.pitch}${n.octave}`), ['C4', 'G4', 'C5', 'G5']);
+  assert.ok(seq.every((n) => n.instrumentId === 'keys-pluck'));
+
+  // Keys with no instrument stay plain notes for the caller to fill in.
+  const plain = buildArpSequence(chord, { mode: 'up' });
+  assert.equal(plain.length, 3);
+  assert.equal('instrumentId' in plain[0], false);
+  // Garbage still gets filtered instead of poisoning the sequence.
+  assert.deepEqual(buildArpSequence([{ pitch: 'C' }, null, { octave: 4 }], { mode: 'up' }), []);
+});
+

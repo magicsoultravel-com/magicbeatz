@@ -171,6 +171,12 @@
             <button type="button" class="mbz-btn mbz-big" data-play title="Play">▶</button>
             <button type="button" class="mbz-btn mbz-big" data-stop title="Stop" disabled>■</button>
             <button type="button" class="mbz-btn mbz-big mbz-rec" data-capture title="Record pads + keys into the active clip" aria-label="Record pads and keys">⏺</button>
+            <label class="mbz-tb-field">rec
+              <select data-record-mode title="overdub layers every pass · replace rewrites the notes you re-play">
+                <option value="overdub">overdub</option>
+                <option value="replace">replace</option>
+              </select>
+            </label>
             <label class="mbz-tb-field">BPM <input type="number" data-bpm value="120" min="30" max="250"></label>
             <label class="mbz-tb-field">swing <input type="range" data-swing min="0" max="100" value="0"><span data-swing-val>0%</span></label>
             <label class="mbz-tb-field">sig
@@ -188,6 +194,10 @@
                 <option value="4">4b</option>
               </select>
             </label>
+            <span class="mbz-metro" role="group" aria-label="Metronome">
+              <button type="button" class="mbz-btn is-on" data-metro aria-pressed="true" title="Metronome click — click to mute">click</button>
+              <span class="mbz-metro-dots" data-metro-dots aria-hidden="true"></span>
+            </span>
             <span class="mbz-session-spacer"></span>
             <div class="mbz-mode-toggle" role="group" aria-label="Play mode">
               <button type="button" class="mbz-btn" data-mode-live title="Live looper — clips queue at bar boundaries">Live</button>
@@ -216,10 +226,13 @@
                 <h2>grid <span class="mbz-hint" data-grid-title>—</span></h2>
               </div>
               <div class="mbz-grid-wrap"><div class="mbz-grid" data-grid role="grid" aria-label="Step sequencer"></div></div>
+              <div class="mbz-step-editor" data-step-editor role="group" aria-label="Step editor" hidden></div>
               <div class="mbz-vel-row">
                 <label>velocity <input type="range" data-velocity min="10" max="100" value="80" disabled></label>
                 <span data-velocity-val>—</span>
                 <button type="button" class="mbz-btn" data-grid-clear>clear</button>
+                <button type="button" class="mbz-btn" data-grid-tidy title="Remove pitch rows that hold no steps">tidy</button>
+                <button type="button" class="mbz-btn" data-grid-undo disabled title="Roll back the last take">undo take</button>
                 <button type="button" class="mbz-btn" data-grid-reset>factory</button>
                 <span class="mbz-session-spacer"></span>
                 <span class="mbz-track-add">

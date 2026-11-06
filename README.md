@@ -32,11 +32,14 @@ modules, so any static server works too.
 - `src/pads/model.js` → 8 pads × banks A/B, kit per bank, (channel, note) routing
 - `src/midi/` → connection / firmware SysEx inquiry / note helpers
 - `src/keys/perform.js` → note repeat + arpeggiator (rates, arp sequences, perform clock)
+- `src/sequencer/metronome.js` → beat/lamp mapping + count-in math (pure)
+- `src/audio/metronome.js` → the click voice (osc blip on the master bus)
 - `src/state/` → store (isolated keys) + settings (knob CCs, octaves)
 - `tests/arrangement.test.mjs` → 16-bar Looper timeline, migration and song-resolution tests
 - `tests/arranger.test.mjs` → whole-Grid Arranger layers, layering, migration and serialization tests
 - `tests/perform.test.mjs` → repeat/arp rates, arp ordering, pref normalization, step-gate fit tests
 - `tests/sampler-step.test.mjs` → gated sample step events (duration/release/unique stopId)
+- `tests/metronome.test.mjs` → beat/lamp mapping, count-in plan and pref normalization
 - `assets/` → notes/chords/scales/chords-theory JSON
 
 ## Sounds
@@ -86,8 +89,49 @@ Details:
   sustains.
 - Both respect the **audition** toggle and capture into the active clip while
   ⏺ record is armed, so repeated/arped notes land on the grid.
+- Note and chord pads feed repeat and arp exactly like held keys, so a pad chord
+  can seed the arp; drum pads never do (they only ever fire their voice).
 - Releases are gated per step (repeat 60%, arp 80%), so nothing sticks: mode
   off, last key up, audition off, octave change or tab blur all stop the run.
+
+## Metronome & count-in
+
+- The transport bar has a **click** button (on by default) and one light per
+  beat of the current signature — 4/4 shows 4 lights, 3/4 shows 3, 6/8 shows 6.
+  The first light of each bar is the accent. Lights rebuild when `sig` changes.
+- Clicks and lights are derived from the 16th-note step counter, so swing never
+  moves a beat: the metronome stays exactly on the grid while the hats bounce.
+- Pressing **▶** or **⏺** plays a **one-bar count-in** (accent on beat 1) and
+  the first played step lands exactly on the count-in's last beat — sample
+  accurate, because the transport starts at an absolute AudioContext time.
+- **⏺** from a standstill also counts in, and captured hits quantize from that
+  downbeat instead of from the press, so a live take lines up with bar 1.
+- **■** cancels a count-in in progress. Stopping (or song end) also commits
+  whatever was captured, so a take is never lost by hitting stop instead of ⏺.
+- Muting silences the click but keeps the lights, and kills clicks already
+  scheduled in the lookahead window. The pref persists.
+
+## Recording a take
+
+- **⏺** records pads and keys into the active clip. Arming from a standstill
+  counts in and quantizes from that downbeat; arming mid-play keeps the origin
+  the running loop handed over, so hits land on the grid you hear.
+- Recording over a looping clip **commits every pass**: when the loop wraps, the
+  hits of the pass that just ended are written, so the grid fills in while the
+  loop keeps running. Hits the perform clock already scheduled for the next pass
+  stay buffered — nothing is lost and nothing is written twice.
+- **rec** in the transport bar picks what a pass does:
+  - `overdub` (default) layers — only the steps a pass touches are rewritten.
+  - `replace` clears the rows of the instrument a pass played, at the steps it
+    played, so replaying a bar fixes the notes you re-play. It is scoped per
+    instrument and all drums count as one instrument, so a keys-only pass never
+    erases a drum hit.
+- **undo take** in the grid bar rolls the whole take back to how the clip looked
+  when you armed it: rows the take created are dropped, the rest get their steps
+  back. One level, one clip.
+- Repeat/arp runs are captured one pitch row per trigger, each with its own
+  instrument. Song mode keeps a single frozen origin for a take, because its
+  slots have mixed lengths.
 
 ## Tracks
 
@@ -102,6 +146,29 @@ Details:
   Escape and the close button return focus to the row name; clicking away
   closes it without moving focus.
 
+
+## Grid editing
+
+- **One row per pitch.** A `note` row stores a fixed `{instrument, pitch,
+  octave}`, so captured keys open their own row (labelled `C4 · rhodes`) inside
+  that instrument's block, highest pitch on top — a played chord shows up as a
+  column of lit rows. Replaying a bar rewrites the steps it touches, so a take
+  overdubs instead of leaving the first wrong note behind.
+- Drum pads map to their voice row (the kick always lands on the kick row), and
+  pads mapped to a single note record like a key. Chord pads record as a chord
+  column — one hit per sounding pitch.
+- Rows are capped at 32 tracks; anything extra is dropped with a notice in the
+  grid header. **tidy** removes note rows that hold no steps.
+- The **ruler** above the rows numbers each beat and names the chord every
+  column spells (`C`, `Am7`, `Fsus4`, …) from theory data, with a plain interval
+  fallback, so a stack is readable even without chord tracks.
+- **Drag** a lit cell to move that hit inside its row; drag the ruler to move the
+  whole column (every row at that step). A drop on an occupied slot swaps the
+  two. Dragging never fires the click, so a drag is not also a toggle.
+- Clicking a step opens the **step editor** under the grid: a two-octave keyboard
+  that toggles pitches in that column (writing the same rows capture writes),
+  plus `−8ve` / `+8ve`, copy / paste / clear for the whole column and step
+  stepping `◀ ▶`.
 
 ## Arrangement timeline
 
@@ -165,5 +232,6 @@ Details:
   per-bank kits) — both schema-tagged and migrated in place.
 - `magicbeatz-keys-perform-v1` holds the repeat/arp prefs (toggles, rates, arp
   mode, octaves, latch); invalid or hand-edited values fall back to defaults.
+- `magicbeatz-metronome-v1` holds just the click toggle ({ enabled }).
 - One-shot read-only import from legacy `guitarsuite-magicbeatz`, never
   writes back.

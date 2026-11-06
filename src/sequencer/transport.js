@@ -130,14 +130,23 @@ export function createStepTransport({
       currentStep = ((Math.floor(v) % total) + total) % total;
     },
 
-    start() {
+    /**
+     * Start the loop. `startAt` is an optional absolute AudioContext time
+     * (seconds) — the count-in passes the last click's beat so the first played
+     * step lands exactly on it instead of ~50 ms after the call. The lookahead
+     * loop simply idles until that moment arrives.
+     */
+    start(startAt) {
       stop();
       const sps = secondsPerStep();
       if (!sps) return false;
       const ctx = getAudioContext();
+      const at = Number(startAt);
       running = true;
       currentStep = -1;
-      nextNoteTime = ctx.currentTime + 0.05;
+      nextNoteTime = Number.isFinite(at)
+        ? Math.max(ctx.currentTime + 0.01, at)
+        : ctx.currentTime + 0.05;
       tick();
       return true;
     },

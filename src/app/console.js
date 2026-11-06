@@ -6,7 +6,7 @@ import { getAudioContext, ensureAudio } from '../audio/context.js';
 import {
   clampBpm, clamp01, beatsFromTimeSignature, totalSteps,
   stepsPerBar, createEmptyPattern,
-  DEFAULT_VELOCITY,
+  DEFAULT_VELOCITY, STEPS_PER_BEAT,
   createChannel, defaultInstrumentForType,
   resizePatternSteps, serializeChannel,
 } from '../sequencer/pattern.js';
@@ -18,14 +18,25 @@ import {
   arrangerLanesToSlots, arrangerSlotsToLanes,
 } from '../sequencer/project.js';
 import { createStepTransport } from '../sequencer/transport.js';
+import { playMetronomeClick } from '../audio/metronome.js';
+import {
+  METRONOME_PREFS_KEY, COUNT_IN_BARS,
+  normalizeMetronomePrefs, beatInfoForStep, countInClickPlan, countInSeconds,
+} from '../sequencer/metronome.js';
 import { playChannelHit } from '../audio/banks.js';
+import {
+  MAX_CAPTURE_TRACKS, applyCaptureHits, captureColumnSnapshot, channelMidi, columnNotes,
+  ensurePitchRow, expandChordPadHit, midiNote, moveColumn, moveStep, padPerformNotes,
+  pasteColumnSnapshot, pitchLabel, pruneEmptyNoteRows, restoreTake, rowMatchesNote,
+  secondsPerStep, snapshotTake, splitCaptureBuffer,
+} from '../sequencer/notes.js';
 import { playPercussionVoice, PERCUSSION_BANK } from '../audio/percussion.js';
 import {
   playPitchedInstrument, playPitchedChord, playPitchedStep,
   startPitchedSustain, stopPitchedSustain, releaseStepGates,
   setStickBendCents, setStickVibrato,
 } from '../audio/voices.js';
-import { chordEntriesFor, chordNameOptions } from '../theory/chords.js';
+import { chordEntriesFor, chordLabel, chordNameOptions } from '../theory/chords.js';
 import { loadMbzProject, saveMbzProject, resetMbzProject } from '../state/store.js';
 import {
   loadPadMap, savePadMap, applyCurve, PAD_ORDER, getLearnSlot, setLearnSlot,
@@ -90,6 +101,20 @@ let audition = true;
 let capturing = false;
 let recordBuffer = [];
 let loopOriginTime = 0;
+// Downbeat of the loop pass the buffered hits belong to. Frozen for the whole
+// take in Song mode, refreshed at every wrap in pattern mode.
+let captureOrigin = 0;
+let capturePass = 0; // how many passes this take has committed
+let captureNotes = 0; // notes written across the whole take
+let lastTake = null; // { patternId, written, pass } for the undo button
+let takeSnapshot = null; // snapshotTake() at arm time = one-level undo
+let captureUiTimer = 0; // coalesces the grid repaint while a take rolls
+// Metronome: audible by default, mutable from the transport bar. The count-in
+// is always one bar of the current signature (see sequencer/metronome.js).
+let metronomePrefs = loadMetronomePrefs();
+let countInState = null; // { endsAt, beats, timerId } while the count-in bar runs
+let metroDotCount = 0; // lights currently built (= beats in the signature)
+let liveClicks = []; // click envelopes scheduled on the audio clock
 let selectedCell = null;
 let keysCurve = 'linear';
 let keysInstrumentId = DEFAULT_KEYS_INSTRUMENT;
@@ -121,6 +146,21 @@ function loadKeysPerformPref() {
 function saveKeysPerformPref(prefs) {
   try { localStorage.setItem(KEYS_PERFORM_STORAGE, JSON.stringify(prefs)); } catch { /* ignore */ }
 }
+// Record mode: `overdub` layers passes, `replace` rewrites what you re-play.
+const RECORD_MODE_STORAGE = 'magicbeatz-record-mode-v1';
+const RECORD_MODES = ['overdub', 'replace'];
+function loadRecordModePref() {
+  try {
+    const raw = localStorage.getItem(RECORD_MODE_STORAGE);
+    return RECORD_MODES.includes(raw) ? raw : 'overdub';
+  } catch {
+    return 'overdub';
+  }
+}
+function saveRecordModePref(mode) {
+  try { localStorage.setItem(RECORD_MODE_STORAGE, mode); } catch { /* ignore */ }
+}
+let recordMode = loadRecordModePref();
 // Session — clip launcher + arrangement timeline (live looper / song mode).
 let queuedPatternId = null; // clip waiting to start at the next bar boundary
 let songPlayingPatternIds = new Set(); // patterns sounding under the current song step
@@ -165,9 +205,15 @@ const swingInput = $('[data-swing]');
 const swingVal = $('[data-swing-val]');
 const sigSelect = $('[data-sig]');
 const barsSelect = $('[data-bars]');
+const captureBtn = $('[data-capture]');
+const recordModeSelect = $('[data-record-mode]');
+const metroGroupEl = $('.mbz-metro');
+const metroBtn = $('[data-metro]');
+const metroDotsEl = $('[data-metro-dots]');
 const projectNote = $('[data-project-note]');
 const padsEl = $('[data-pads]');
 const gridEl = $('[data-grid]');
+const stepEditorEl = $('[data-step-editor]');
 const velInput = $('[data-velocity]');
 const velVal = $('[data-velocity-val]');
 const keyboardEl = $('[data-keyboard]');
@@ -503,7 +549,24 @@ const transport = createStepTransport({
   getLoop: () => project.playMode !== 'song' || project.arrangeLoop !== false,
   getSwing: () => clamp01(project.swing),
   onStep(stepIndex, _total, when) {
-    if (stepIndex === 0) loopOriginTime = when;
+    if (stepIndex === 0) {
+      // Pattern mode: commit the pass that just ended and re-anchor the take on
+      // this downbeat, so the grid fills in while the loop keeps running. Hits
+      // the perform clock already scheduled for this pass stay buffered
+      // (splitCaptureBuffer cuts at `when`). Song mode keeps one frozen origin:
+      // its slots have mixed lengths, so per-pass folding would be wrong.
+      if (capturing && project.playMode !== 'song') {
+        commitCapture({ until: when, pass: true });
+        captureOrigin = when;
+      }
+      loopOriginTime = when;
+    }
+    // Metronome: one click + one light per beat, accent on beat 1 of the bar.
+    const beat = beatInfoForStep(stepIndex, getBeats());
+    if (beat.isBeat) {
+      if (metronomePrefs.enabled) fireMetronomeClick(when, beat.isAccent);
+      scheduleMetronomeBeat(when, beat.beatIndex);
+    }
     if (project.playMode === 'song') {
       onSongStep(stepIndex, _total, when);
       return;
@@ -534,6 +597,294 @@ function setPlaying(playing) {
   playBtn.disabled = playing;
   stopBtn.disabled = !playing;
   updateProjectNote();
+}
+
+// ---------- metronome + count-in ----------
+
+function loadMetronomePrefs() {
+  try {
+    const raw = localStorage.getItem(METRONOME_PREFS_KEY);
+    return normalizeMetronomePrefs(raw ? JSON.parse(raw) : null);
+  } catch {
+    return normalizeMetronomePrefs(null);
+  }
+}
+
+function saveMetronomePrefs(prefs) {
+  try { localStorage.setItem(METRONOME_PREFS_KEY, JSON.stringify(prefs)); } catch { /* ignore */ }
+}
+
+/** Paint the mute button + one light per beat of the current signature. */
+function renderMetronome() {
+  const beats = getBeats();
+  if (metroDotsEl && metroDotCount !== beats) {
+    metroDotsEl.innerHTML = '';
+    for (let i = 0; i < beats; i += 1) {
+      const dot = document.createElement('i');
+      dot.className = `mbz-metro-dot${i === 0 ? ' is-accent' : ''}`;
+      dot.dataset.beat = String(i);
+      metroDotsEl.appendChild(dot);
+    }
+    metroDotCount = beats;
+  }
+  if (metroBtn) {
+    metroBtn.classList.toggle('is-on', metronomePrefs.enabled);
+    metroBtn.setAttribute('aria-pressed', String(metronomePrefs.enabled));
+    metroBtn.title = metronomePrefs.enabled
+      ? 'Metronome click on — click to mute'
+      : 'Metronome muted — click to unmute';
+  }
+  metroGroupEl?.classList.toggle('is-muted', !metronomePrefs.enabled);
+}
+
+function paintMetronomeBeat(beatIndex) {
+  if (!metroDotsEl) return;
+  const dots = metroDotsEl.children;
+  for (let i = 0; i < dots.length; i += 1) {
+    dots[i].classList.toggle('is-lit', i === beatIndex);
+  }
+}
+
+/** Light the beat on the audio clock, same compensation as the playheads. */
+function scheduleMetronomeBeat(when, beatIndex) {
+  const delay = Math.max(0, (when - getAudioContext().currentTime) * 1000 - 8);
+  window.setTimeout(() => {
+    if (!playbackUiActive) return;
+    paintMetronomeBeat(beatIndex);
+  }, delay);
+}
+
+function clearMetronomeLights() {
+  metroDotsEl?.querySelectorAll('.mbz-metro-dot.is-lit').forEach((dot) => dot.classList.remove('is-lit'));
+}
+
+/** One click, tracked so muting can silence an already-scheduled envelope. */
+function fireMetronomeClick(when, accent) {
+  try {
+    const ctx = getAudioContext();
+    liveClicks = liveClicks.filter((c) => c.until > ctx.currentTime);
+    const handle = playMetronomeClick(when, { accent });
+    if (handle) liveClicks.push(handle);
+  } catch { /* offline or no gesture yet */ }
+}
+
+/** Muting kills clicks already handed to the audio clock (lookahead window). */
+function silencePendingClicks() {
+  if (!liveClicks.length) return;
+  const now = getAudioContext().currentTime;
+  for (const { gain } of liveClicks) {
+    try {
+      const g = gain.gain;
+      g.cancelScheduledValues(now);
+      g.setValueAtTime(g.value, now);
+      g.linearRampToValueAtTime(0, now + 0.005);
+    } catch { /* ignore */ }
+  }
+  liveClicks = [];
+}
+
+/**
+ * One bar of count-in: clicks + lights, then the transport starts exactly on
+ * the last beat. Returns that absolute AudioContext time (the downbeat).
+ */
+function startCountIn() {
+  const ctx = ensureAudio();
+  const bpm = getBpm();
+  const beats = getBeats();
+  const startAt = ctx.currentTime + 0.08; // small pre-roll so click 1 is never late
+  const plan = countInClickPlan(startAt, bpm, beats, COUNT_IN_BARS);
+  const endsAt = startAt + countInSeconds(bpm, beats, COUNT_IN_BARS);
+
+  metroGroupEl?.classList.add('is-count-in');
+  clearMetronomeLights();
+  for (const click of plan) {
+    if (metronomePrefs.enabled) fireMetronomeClick(click.when, click.accent);
+    scheduleMetronomeBeat(click.when, click.beatIndex);
+  }
+
+  const timerId = window.setTimeout(() => {
+    metroGroupEl?.classList.remove('is-count-in');
+    countInState = null;
+  }, Math.max(0, (endsAt - ctx.currentTime) * 1000));
+
+  countInState = { endsAt, beats, timerId };
+  return endsAt;
+}
+
+function cancelCountIn() {
+  if (!countInState) return;
+  if (countInState.timerId != null) window.clearTimeout(countInState.timerId);
+  countInState = null;
+  metroGroupEl?.classList.remove('is-count-in');
+  clearMetronomeLights();
+}
+
+/**
+ * Arm the recorder: one-level undo snapshot, fresh buffer, pass counter.
+ * `origin` is the downbeat the first pass will quantize against.
+ */
+function beginTake(origin) {
+  capturing = true;
+  recordBuffer = [];
+  capturePass = 0;
+  captureNotes = 0;
+  lastTake = null;
+  captureOrigin = Number(origin) || 0;
+  takeSnapshot = snapshotTake(activePattern()) || null;
+  captureBtn?.classList.add('is-on');
+  updateUndoButton();
+}
+
+/** Disarm the recorder: flush the pass in flight, keep the snapshot for undo. */
+function endTake() {
+  if (!capturing) return;
+  commitCapture();
+  capturing = false;
+  recordBuffer = [];
+  captureBtn?.classList.remove('is-on');
+  // A take that wrote nothing has nothing to undo.
+  if (!capturePass) takeSnapshot = null;
+  updateUndoButton();
+}
+
+/** Enable the grid's `undo take` button while a take can still be rolled back. */
+function updateUndoButton() {
+  const btn = document.querySelector('[data-grid-undo]');
+  if (!btn) return;
+  const pat = activePattern();
+  const usable = !!takeSnapshot && !!pat
+    && (!takeSnapshot.patternId || takeSnapshot.patternId === pat.id);
+  btn.disabled = !usable;
+  const detail = lastTake?.written
+    ? ` — last take: ${lastTake.written} note${lastTake.written === 1 ? '' : 's'}`
+      + ` over ${lastTake.pass} pass${lastTake.pass === 1 ? '' : 'es'}`
+    : '';
+  btn.title = usable ? `Roll back the last take${detail}` : 'Roll back the last take';
+}
+
+/** Shared ▶ / ⏺ start path: count-in, then playback on the exact downbeat. */
+function startPlayback({ record = false } = {}) {
+  ensureAudio();
+  // First guaranteed gesture: build the FX chain now so the first knob
+  // sweep has no mid-play master-bus rewire hiccup.
+  try { getFxChain(); } catch { /* offline */ }
+  flushPendingLoads();
+  if (record) {
+    beginTake(0); // real origin arrives with the count-in downbeat below
+    captureBtn?.classList.add('is-on');
+  }
+  playbackUiActive = true;
+  const downbeat = startCountIn();
+  // Captured hits quantize from the count-in's downbeat, not from the press.
+  if (record) {
+    loopOriginTime = downbeat;
+    captureOrigin = downbeat;
+  }
+  if (!transport.start(downbeat)) {
+    cancelCountIn();
+    playbackUiActive = false;
+    return false;
+  }
+  songPlayingPatternIds = new Set();
+  if (project.playMode === 'song') clearPlayheads();
+  setPlaying(true);
+  renderSession();
+  return true;
+}
+
+/** Drum row for a captured pad hit: the row for this voice, or a fresh one. */
+function ensureDrumRow(pat, hit, len) {
+  const voiceId = hit.entry?.voiceId || 'kick';
+  const kitId = padMap.kits?.[hit.bank] || defaultKitForBank(hit.bank) || DEFAULT_DRUM_KIT_ID;
+  const existing = pat.channels.find((c) => c.type === 'percussion' && c.voiceId === voiceId);
+  if (existing) {
+    existing.kitId = kitId;
+    return { channel: existing, created: false, blocked: false };
+  }
+  if (pat.channels.length >= MAX_CAPTURE_TRACKS) {
+    return { channel: null, created: false, blocked: true };
+  }
+  const channel = createChannel({
+    type: 'percussion',
+    voiceId,
+    kitId,
+    name: uniqueTrackName(pat, 'percussion', drumVoiceLabel(voiceId)),
+    steps: Array.from({ length: len }, () => null),
+  });
+  pat.channels.push(channel);
+  return { channel, created: true, blocked: false };
+}
+
+/** Note row for a captured hit: one row per instrument + pitch + octave. */
+function ensureKeyRow(pat, note, len) {
+  return ensurePitchRow(pat, note, {
+    len,
+    name: uniqueTrackName(pat, 'note', instrumentLabel(note.instrumentId)),
+  });
+}
+
+/**
+ * Write one pass of the take into the active clip.
+ *
+ * Keys, note pads and chord pads land on their own pitch row — created on
+ * demand — so a played chord shows up as one column of lit rows instead of
+ * being dropped or retriggered on a single fixed-pitch row. In `overdub` mode
+ * only the steps this pass touches are rewritten, so passes layer onto each
+ * other; in `replace` mode the instrument rows this pass played are cleared
+ * first, so replaying a bar fixes what you re-play.
+ *
+ * `until` is the next pass boundary: recording over a looping clip calls this
+ * every time the loop wraps, which commits the hits of the pass that just ended
+ * and keeps the ones the perform clock already scheduled for the next one.
+ */
+function commitCapture({ until = Infinity, pass = false } = {}) {
+  const split = splitCaptureBuffer(recordBuffer, until);
+  recordBuffer = split.pending;
+  if (!split.ready.length) return;
+  const ready = split.ready;
+  const pat = activePattern();
+  if (!pat) {
+    recordBuffer = [];
+    return;
+  }
+  const len = Math.max(1, patternStepCount(pat));
+  const res = applyCaptureHits(pat, ready, {
+    originTime: captureOrigin,
+    stepSeconds: secondsPerStep(getBpm()),
+    stepCount: len,
+    mode: recordMode,
+    ensureDrum: (hit, steps) => ensureDrumRow(pat, hit, steps),
+    ensureKey: (note, steps) => ensureKeyRow(pat, note, steps),
+    expandPad: (hit) => expandChordPadHit(hit, chordEntriesFor(hit.entry || {}, chordCtx())),
+  });
+  capturePass += 1;
+  captureNotes += res.written;
+  lastTake = { patternId: pat.id, written: res.written, pass: capturePass };
+  if (res.blocked) {
+    setGridNotice(`capture: ${MAX_CAPTURE_TRACKS}-track cap · extra notes ignored`);
+  } else if (pass) {
+    // Mid-take progress: the grid fills in as the loop wraps.
+    setGridNotice(`capture: pass ${capturePass} · ${res.written} note${res.written === 1 ? '' : 's'}`, 2000);
+  } else if (capturePass > 1) {
+    setGridNotice(`capture: ${captureNotes} notes over ${capturePass} passes`);
+  } else if (recordMode === 'replace' && res.cleared) {
+    setGridNotice(`capture: ${res.written} note${res.written === 1 ? '' : 's'} · replaced ${res.cleared}`);
+  } else if (res.created) {
+    setGridNotice(`capture: +${res.created} row${res.created === 1 ? '' : 's'}`);
+  }
+  flushCaptureUi();
+}
+
+/** Repaint the grid after a capture pass, at most once per frame. */
+function flushCaptureUi() {
+  if (captureUiTimer) return;
+  captureUiTimer = window.setTimeout(() => {
+    captureUiTimer = 0;
+    persist();
+    renderGrid();
+    updateVelocityUi();
+    updateUndoButton();
+  }, 0);
 }
 
 function padLabel(entry) {
@@ -606,6 +957,11 @@ function renderPads() {
       }
       auditionPad(bank, padNum, 0.9);
     });
+    // A pad feeding repeat/arp holds until release, exactly like a key.
+    const releasePad = () => releasePadPerform(bank, padNum);
+    btn.addEventListener('pointerup', releasePad);
+    btn.addEventListener('pointercancel', releasePad);
+    btn.addEventListener('lostpointercapture', releasePad);
     padsEl.appendChild(btn);
   }
 }
@@ -623,6 +979,51 @@ function flashPad(padNum) {
   window.setTimeout(() => btn.classList.remove('is-hit'), 120);
 }
 
+/**
+ * Route a pad into note repeat / the arpeggiator. Note and chord pads behave
+ * like held keys, so a chord pad can seed the arp; drum pads never do.
+ * Returns true when the perform clock took the hit over.
+ */
+function holdPadPerform(bankId, padNum, entry, velocity) {
+  if (!keysPerform.repeat.enabled && !keysPerform.arp.enabled) return false;
+  if (entry.target === 'drum') return false;
+  const notes = padPerformNotes(entry, entry.target === 'chord' ? chordEntriesFor(entry, chordCtx()) : []);
+  if (!notes.length) return false;
+  const holdId = `pad:${bankId}:${padNum}`;
+  if (keysPerform.arp.enabled && keysPerform.arp.latch) {
+    if (performHolds.size === 0) latchedArpNotes = [];
+    for (const note of notes) {
+      if (latchedArpNotes.some((n) => n.pitch === note.pitch && n.octave === note.octave)) continue;
+      latchedArpNotes.push({ ...note, velocity });
+    }
+  }
+  for (const note of notes) {
+    performHolds.set(`${holdId}:${note.pitch}${note.octave}`, {
+      pitch: note.pitch,
+      octave: note.octave,
+      velocity,
+      instrumentId: note.instrumentId,
+      source: 'pad',
+      order: performOrder,
+    });
+    performOrder += 1;
+  }
+  refreshPerformClock();
+  return true;
+}
+
+/** Drop every perform note a pad is holding (pointerup / cancel / note-off). */
+function releasePadPerform(bankId, padNum) {
+  const prefix = `pad:${bankId}:${padNum}:`;
+  let removed = 0;
+  for (const holdId of [...performHolds.keys()]) {
+    if (!holdId.startsWith(prefix)) continue;
+    performHolds.delete(holdId);
+    removed += 1;
+  }
+  if (removed) refreshPerformClock();
+}
+
 function auditionPad(bankId, padNum, velocity = 0.85) {
   if (!audition) return;
   ensureAudio();
@@ -630,6 +1031,12 @@ function auditionPad(bankId, padNum, velocity = 0.85) {
   const entry = padMap[bankId]?.[padNum];
   if (!entry) return;
   const vel = applyCurve(velocity, entry.curve) * clamp01(entry.gain ?? 0.9);
+  // Repeat/arp on: the perform clock owns the hit, so the pad is not recorded
+  // or played twice — the clock's own triggers land as one pitch row per note.
+  if (holdPadPerform(bankId, padNum, entry, vel)) {
+    flashPad(padNum);
+    return;
+  }
   if (capturing) recordBuffer.push({ kind: 'pad', bank: bankId, pad: padNum, entry: { ...entry }, t: getAudioContext().currentTime, velocity: vel });
   if (entry.target === 'drum') {
     const kitId = padMap.kits?.[bankId] || defaultKitForBank(bankId);
@@ -662,7 +1069,9 @@ function auditionKey(pitch, octave, holdId, velocity) {
         latchedArpNotes.push({ pitch, octave, velocity: vel });
       }
     }
-    performHolds.set(holdId, { pitch, octave, velocity: vel, order: performOrder });
+    performHolds.set(holdId, {
+      pitch, octave, velocity: vel, instrumentId: inst, source: 'key', order: performOrder,
+    });
     performOrder += 1;
     refreshPerformClock();
     return;
@@ -718,13 +1127,16 @@ function flashPerformKey(note, gateSec) {
 
 function firePerformNote(note, when, gateSec) {
   const velocity = note.velocity ?? 0.85;
+  // Each perform note carries its own instrument, so a chord pad seeded into
+  // the arp records to (and sounds with) that pad's sound, not the keys sound.
+  const instrumentId = note.instrumentId || keysInstrumentId;
   if (capturing) {
     recordBuffer.push({
       kind: 'key', pitch: note.pitch, octave: note.octave,
-      instrumentId: keysInstrumentId, t: when, velocity,
+      instrumentId, t: when, velocity,
     });
   }
-  playPitchedStep(keysInstrumentId, note.pitch, note.octave, when, velocity, gateSec);
+  playPitchedStep(instrumentId, note.pitch, note.octave, when, velocity, gateSec);
   flashPerformKey(note, gateSec);
 }
 
@@ -775,14 +1187,19 @@ function refreshPerformClock() {
 /** Turning both toggles off keeps held keys sounding as normal sustains. */
 function flushPerformHoldsToSustain() {
   if (!performHolds.size) return;
-  const holds = [...performHolds];
+  // Pads are momentary triggers, not sustains: converting a pad hold into a
+  // sustain would leave a note stuck with nothing to release it.
+  const holds = [...performHolds].filter(([, note]) => note.source !== 'pad');
   performHolds.clear();
+  if (!holds.length) return;
   // A pending step gate must not release the held note we are about to start.
   releaseStepGates();
   if (!audition) return;
   ensureAudio();
   for (const [holdId, note] of holds) {
-    const sustain = startPitchedSustain(keysInstrumentId, note.pitch, note.octave, note.velocity);
+    const sustain = startPitchedSustain(
+      note.instrumentId || keysInstrumentId, note.pitch, note.octave, note.velocity,
+    );
     heldKeys.set(holdId, sustain || null);
   }
 }
@@ -925,6 +1342,24 @@ function trackName(ch) {
   return ch.name || ch.voiceId || ch.instrumentId || ch.type || 'track';
 }
 
+/** Transient line appended to the grid header (capture notices, tidy counts). */
+let gridNotice = '';
+let gridNoticeTimer = 0;
+function gridTitleText(pat) {
+  const base = `${pat.name} · ${pat.bars}b · ${pat.channels.length} track${pat.channels.length === 1 ? '' : 's'}`;
+  return gridNotice ? `${base} · ${gridNotice}` : base;
+}
+function setGridNotice(text = '', ms = 4000) {
+  gridNotice = text;
+  if (gridNoticeTimer) {
+    window.clearTimeout(gridNoticeTimer);
+    gridNoticeTimer = 0;
+  }
+  const pat = activePattern();
+  if (gridTitleEl && pat) gridTitleEl.textContent = gridTitleText(pat);
+  if (text) gridNoticeTimer = window.setTimeout(() => setGridNotice(''), ms);
+}
+
 /** Keep a row's name / mute / solo controls in sync without rerendering. */
 function syncTrackRow(ch) {
   if (!ch) return;
@@ -932,8 +1367,7 @@ function syncTrackRow(ch) {
   if (!row) return;
   const name = row.querySelector('.mbz-ch-name');
   if (name) {
-    name.textContent = trackName(ch);
-    name.title = `${trackName(ch)} · click to edit this track`;
+    paintTrackName(name, ch);
     name.classList.toggle('is-open', trackPopoverId === ch.id);
     name.setAttribute('aria-expanded', String(trackPopoverId === ch.id));
   }
@@ -959,8 +1393,9 @@ function renderGrid() {
   const n = patternStepCount(pat);
   gridEl.style.setProperty('--steps', String(n));
   if (gridTitleEl) {
-    gridTitleEl.textContent = `${pat.name} · ${pat.bars}b · ${pat.channels.length} track${pat.channels.length === 1 ? '' : 's'}`;
+    gridTitleEl.textContent = gridTitleText(pat);
   }
+  gridEl.appendChild(renderRulerRow(pat, n));
   let popoverAnchor = null;
   let popoverIndex = -1;
   pat.channels.forEach((ch, chIndex) => {
@@ -968,9 +1403,10 @@ function renderGrid() {
       ch.steps = Array.from({ length: n }, (_, k) => ch.steps[k] || null);
     }
     const row = document.createElement('div');
-    row.className = 'mbz-ch-row';
+    row.className = `mbz-ch-row${ch.type === 'note' ? ' is-pitch' : ''}`;
     row.dataset.channelId = ch.id;
     row.style.setProperty('--steps', String(n));
+    if (ch.type === 'note') row.style.setProperty('--row-hue', String(rowHue(ch)));
 
     const head = document.createElement('div');
     head.className = 'mbz-ch-head';
@@ -978,8 +1414,7 @@ function renderGrid() {
     const name = document.createElement('button');
     name.type = 'button';
     name.className = 'mbz-ch-name';
-    name.textContent = trackName(ch);
-    name.title = `${trackName(ch)} · click to edit this track`;
+    paintTrackName(name, ch);
     name.classList.toggle('is-open', trackPopoverId === ch.id);
     name.setAttribute('aria-haspopup', 'dialog');
     name.setAttribute('aria-controls', `mbz-track-pop-${ch.id}`);
@@ -1038,8 +1473,13 @@ function renderGrid() {
       cell.type = 'button';
       cell.className = `mbz-cell${step ? ' is-on' : ''}${selectedCell?.channelId === ch.id && selectedCell?.stepIndex === i ? ' is-playhead' : ''}`;
       cell.dataset.step = String(i);
-      cell.title = `${trackName(ch)} step ${i + 1}`;
+      const stepName = ch.type === 'note'
+        ? `${trackName(ch)} (${pitchLabel(ch.pitch, ch.octave ?? 4)}) step ${i + 1}`
+        : `${trackName(ch)} step ${i + 1}`;
+      cell.title = step ? `${stepName} · click to select · drag to move` : `${stepName} · click to add`;
+      if (step) cell.addEventListener('pointerdown', (e) => startDrag(e, 'cell', i, cell, ch.id));
       cell.addEventListener('click', () => {
+        if (suppressCellClick) return;
         const idx = i;
         if (ch.steps[idx]) {
           if (selectedCell?.channelId === ch.id && selectedCell?.stepIndex === idx) {
@@ -1065,6 +1505,438 @@ function renderGrid() {
   } else if (trackPopoverId) {
     trackPopoverId = null;
   }
+  renderStepEditor();
+}
+
+/** Hue per instrument so a dozen pitch rows stay readable. */
+const ROW_HUES = [8, 30, 48, 88, 132, 160, 190, 212, 240, 268, 292, 322];
+function rowHue(ch) {
+  const key = `${ch.instrumentId || ''}|${ch.voiceId || ''}|${ch.type || ''}`;
+  let hash = 0;
+  for (let i = 0; i < key.length; i += 1) hash = (hash * 31 + key.charCodeAt(i)) % 9973;
+  return ROW_HUES[hash % ROW_HUES.length];
+}
+
+/**
+ * Row label = optional pitch pill + name. One row per pitch means "C4" has to
+ * be the loudest thing in the head, otherwise twelve identical names are noise.
+ */
+function paintTrackName(el, ch) {
+  const pill = ch.type === 'note' ? pitchLabel(ch.pitch, ch.octave ?? 4) : '';
+  const label = trackName(ch);
+  el.textContent = '';
+  if (pill) {
+    const note = document.createElement('b');
+    note.className = 'mbz-ch-pitch';
+    note.textContent = pill;
+    el.appendChild(note);
+    if (label && label !== pill) {
+      const rest = document.createElement('span');
+      rest.className = 'mbz-ch-label';
+      rest.textContent = label;
+      el.appendChild(rest);
+    }
+    el.title = `${pill} · ${label} · click to edit this track`;
+  } else {
+    el.textContent = label;
+    el.title = `${label} · click to edit this track`;
+  }
+}
+
+/** Beat numbers with the chord each column spells, above every row. */
+function renderRulerRow(pat, n) {
+  const row = document.createElement('div');
+  row.className = 'mbz-ch-row is-ruler';
+  row.style.setProperty('--steps', String(n));
+  const head = document.createElement('div');
+  head.className = 'mbz-ch-head mbz-ruler-head';
+  head.textContent = 'beat · chord';
+  row.appendChild(head);
+  const beats = Math.max(1, getBeats());
+  const perBar = beats * STEPS_PER_BEAT;
+  for (let i = 0; i < n; i += 1) {
+    const notes = columnNotes(pat, i, chordCtx());
+    const label = notes.length > 1 ? chordLabel(notes, theory.chordsTheory) : '';
+    const cell = document.createElement('div');
+    cell.className = 'mbz-ruler-cell';
+    cell.dataset.step = String(i);
+    if (label) {
+      cell.classList.add('is-chord');
+      cell.textContent = label;
+      cell.title = `${label} · ${notes.map((x) => pitchLabel(x.pitch, x.octave)).join(' ')}`;
+    } else if (i % STEPS_PER_BEAT === 0) {
+      cell.classList.add('is-beat');
+      cell.textContent = String(Math.floor((i % perBar) / STEPS_PER_BEAT) + 1);
+      cell.title = `beat ${Math.floor((i % perBar) / STEPS_PER_BEAT) + 1}`;
+    }
+    cell.title = `${cell.title ? `${cell.title} · ` : ''}drag to move this column`;
+    cell.addEventListener('pointerdown', (e) => startDrag(e, 'column', i, cell, ''));
+    row.appendChild(cell);
+  }
+  return row;
+}
+
+// ---------- grid drag: move one hit, or a whole chord column ----------
+const DRAG_THRESHOLD = 4;
+let dragState = null;
+let suppressCellClick = false;
+
+/** The click that follows a drop must not also toggle the cell. */
+function suppressNextClick() {
+  suppressCellClick = true;
+  window.setTimeout(() => { suppressCellClick = false; }, 0);
+}
+
+function clearDragMarks() {
+  gridEl.querySelectorAll('.is-dragging, .is-drop').forEach((el) => {
+    el.classList.remove('is-dragging');
+    el.classList.remove('is-drop');
+  });
+}
+
+function startDrag(e, kind, from, element, channelId) {
+  if (e.button !== 0) return;
+  clearDragMarks();
+  dragState = {
+    kind, from, element, channelId,
+    x: e.clientX, y: e.clientY,
+    moved: false, stepIndex: from, hover: null,
+  };
+  document.addEventListener('pointermove', onDragMove);
+  document.addEventListener('pointerup', onDragUp);
+  document.addEventListener('pointercancel', onDragCancel);
+}
+
+function dragTargetAt(x, y, state) {
+  const el = document.elementFromPoint(x, y);
+  if (!el) return null;
+  if (state.kind === 'column') {
+    const ruler = el.closest('.mbz-ruler-cell');
+    return ruler ? Number(ruler.dataset.step) : null;
+  }
+  const cell = el.closest('.mbz-cell');
+  if (!cell) return null;
+  const row = cell.closest('.mbz-ch-row');
+  if (!row || row.dataset.channelId !== state.channelId) return null;
+  return Number(cell.dataset.step);
+}
+
+function dropTargetEl(state, stepIndex) {
+  if (stepIndex == null) return null;
+  if (state.kind === 'column') {
+    return gridEl.querySelector(`.mbz-ruler-cell[data-step="${stepIndex}"]`);
+  }
+  const id = CSS.escape(state.channelId);
+  return gridEl.querySelector(`.mbz-ch-row[data-channel-id="${id}"] .mbz-cell[data-step="${stepIndex}"]`);
+}
+
+function onDragMove(e) {
+  const state = dragState;
+  if (!state) return;
+  if (!state.moved) {
+    const far = Math.abs(e.clientX - state.x) >= DRAG_THRESHOLD
+      || Math.abs(e.clientY - state.y) >= DRAG_THRESHOLD;
+    if (!far) return;
+    state.moved = true;
+    document.body.classList.add('mbz-dragging');
+    state.element?.classList.add('is-dragging');
+  }
+  const target = dragTargetAt(e.clientX, e.clientY, state);
+  if (target !== state.hover) {
+    clearDragMarks();
+    state.element?.classList.add('is-dragging');
+    state.hover = target;
+    dropTargetEl(state, target)?.classList.add('is-drop');
+  }
+  state.stepIndex = target ?? state.from;
+  e.preventDefault();
+}
+
+function endDrag(commit) {
+  const state = dragState;
+  dragState = null;
+  document.removeEventListener('pointermove', onDragMove);
+  document.removeEventListener('pointerup', onDragUp);
+  document.removeEventListener('pointercancel', onDragCancel);
+  document.body.classList.remove('mbz-dragging');
+  clearDragMarks();
+  if (!state?.moved) return false;
+  if (!commit) return true; // Escape / drop outside simply cancels the take
+  const pat = activePattern();
+  if (!pat || state.stepIndex == null) return true;
+  const changed = state.kind === 'column'
+    ? moveColumn(pat, state.from, state.stepIndex)
+    : moveStep(
+      pat,
+      { channelId: state.channelId, stepIndex: state.from },
+      { channelId: state.channelId, stepIndex: state.stepIndex },
+    );
+  if (changed) {
+    selectedCell = state.kind === 'column'
+      ? null
+      : { channelId: state.channelId, stepIndex: state.stepIndex };
+    persist();
+    renderGrid();
+    updateVelocityUi();
+  }
+  return true;
+}
+
+function onDragUp() {
+  if (endDrag(true)) suppressNextClick();
+}
+
+function onDragCancel() {
+  endDrag(false);
+}
+
+// ---------- mini-keyboard step editor (under the grid) ----------
+let stepClipboard = [];
+let editorBaseOct = 3;
+let editorColumnKey = '';
+
+function stepToolButton(label, title, onClick) {
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'mbz-btn mbz-step-btn';
+  btn.textContent = label;
+  btn.title = title;
+  btn.addEventListener('click', onClick);
+  return btn;
+}
+
+/**
+ * Step inspector: the selected column's notes on a two-octave keyboard plus
+ * octave / copy / paste / clear tools. Toggling a key writes the same per-pitch
+ * rows that recording writes, so both paths produce identical data.
+ */
+function renderStepEditor() {
+  if (!stepEditorEl) return;
+  const pat = activePattern();
+  const stepIndex = selectedCell ? selectedCell.stepIndex : null;
+  if (!pat || stepIndex == null) {
+    stepEditorEl.hidden = true;
+    stepEditorEl.textContent = '';
+    editorColumnKey = '';
+    return;
+  }
+  stepEditorEl.hidden = false;
+  stepEditorEl.textContent = '';
+  const len = Math.max(1, patternStepCount(pat));
+  const notes = columnNotes(pat, stepIndex, chordCtx());
+  const label = notes.length > 1 ? chordLabel(notes, theory.chordsTheory) : '';
+  const row = findChannel(selectedCell.channelId);
+  const pitched = row && (row.type === 'note' || row.type === 'chord') ? row.instrumentId : '';
+  const instrumentId = pitched || notes[0]?.instrumentId || keysInstrumentId;
+  const columnKey = `${pat.id}:${stepIndex}`;
+  if (columnKey !== editorColumnKey) {
+    editorColumnKey = columnKey;
+    const low = notes.length ? Math.min(...notes.map((n) => n.octave ?? 4)) : 3;
+    editorBaseOct = Math.max(0, Math.min(6, low));
+  }
+
+  const head = document.createElement('div');
+  head.className = 'mbz-step-head';
+  const title = document.createElement('strong');
+  title.className = 'mbz-step-title';
+  title.textContent = `step ${stepIndex + 1}/${len}`;
+  head.appendChild(title);
+  const badge = document.createElement('span');
+  badge.className = `mbz-step-chord${label ? ' is-on' : ''}`;
+  badge.textContent = label || (notes.length ? '—' : 'empty');
+  badge.title = notes.length
+    ? notes.map((n) => pitchLabel(n.pitch, n.octave)).join(' ')
+    : 'no notes in this step';
+  head.appendChild(badge);
+  const info = document.createElement('span');
+  info.className = 'mbz-step-info';
+  info.textContent = `${instrumentLabel(instrumentId)} · ${notes.length} note${notes.length === 1 ? '' : 's'}`;
+  head.appendChild(info);
+
+  stepEditorEl.appendChild(head);
+  stepEditorEl.appendChild(renderStepTools(stepIndex, notes));
+  stepEditorEl.appendChild(renderStepKeyboard(stepIndex, instrumentId, notes));
+}
+
+function renderStepTools(stepIndex, notes) {
+  const tools = document.createElement('div');
+  tools.className = 'mbz-step-tools';
+  tools.appendChild(stepToolButton('◀', 'previous step', () => walkStep(-1)));
+  tools.appendChild(stepToolButton('▶', 'next step', () => walkStep(1)));
+  tools.appendChild(stepToolButton('−8ve', 'drop this column an octave', () => transposeColumn(stepIndex, -12)));
+  tools.appendChild(stepToolButton('+8ve', 'lift this column an octave', () => transposeColumn(stepIndex, 12)));
+  tools.appendChild(stepToolButton('copy', 'copy this column', () => copyColumn(stepIndex)));
+  const pasteBtn = stepToolButton(
+    'paste',
+    stepClipboard.length ? `paste ${stepClipboard.length} note(s) here` : 'copy a column first',
+    () => pasteColumn(stepIndex),
+  );
+  pasteBtn.disabled = !stepClipboard.length;
+  tools.appendChild(pasteBtn);
+  tools.appendChild(stepToolButton('clear', 'clear this column', () => clearColumn(stepIndex)));
+  if (!notes.length) {
+    const hint = document.createElement('span');
+    hint.className = 'mbz-step-hint';
+    hint.textContent = 'click a key to write this step';
+    tools.appendChild(hint);
+  }
+  return tools;
+}
+
+/** Two octaves from the framed base: white/black keys reuse the keys styling. */
+function renderStepKeyboard(stepIndex, instrumentId, notes) {
+  const kb = document.createElement('div');
+  kb.className = 'mbz-keyboard mbz-kb-mini';
+  const lit = new Set(notes.map((n) => pitchLabel(n.pitch, n.octave)));
+  for (let i = 0; i <= 24; i += 1) {
+    const { pitch, octave } = midiNote((editorBaseOct + 1) * 12 + i);
+    const black = pitch.includes('#');
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = `mbz-key ${black ? 'black' : 'white'}${lit.has(pitchLabel(pitch, octave)) ? ' is-in-step' : ''}`;
+    btn.dataset.pitch = pitch;
+    btn.dataset.octave = String(octave);
+    btn.textContent = black ? '#' : pitch;
+    btn.title = `${pitchLabel(pitch, octave)} · click to toggle in step ${stepIndex + 1}`;
+    btn.addEventListener('click', () => toggleColumnNote(stepIndex, instrumentId, pitch, octave));
+    kb.appendChild(btn);
+  }
+  return kb;
+}
+
+/** Park the selection on another step of the same row. */
+function walkStep(delta) {
+  if (!selectedCell) return;
+  const pat = activePattern();
+  const n = Math.max(1, patternStepCount(pat));
+  const next = (((selectedCell.stepIndex + delta) % n) + n) % n;
+  selectedCell = { ...selectedCell, stepIndex: next };
+  renderGrid();
+  updateVelocityUi();
+}
+
+function columnVelocity(stepIndex) {
+  const ch = selectedCell ? findChannel(selectedCell.channelId) : null;
+  return clamp01(ch?.steps?.[stepIndex]?.velocity ?? DEFAULT_VELOCITY);
+}
+
+function auditionStepNote(instrumentId, pitch, octave) {
+  if (!audition || !instrumentId) return;
+  ensureAudio();
+  flushPendingLoads();
+  const instrument = resolveInstrument(instrumentId);
+  const when = () => getAudioContext().currentTime + 0.02;
+  const play = () => playPitchedInstrument(instrument.id, pitch, octave, when(), 0.85);
+  if (instrument.engine !== 'sample') {
+    play();
+    return;
+  }
+  ensureSample(instrument.id)
+    .then((inst) => {
+      if (inst) play();
+    })
+    .catch(() => {});
+}
+
+/** Toggle one pitch in the selected column, through the same rows as capture. */
+function toggleColumnNote(stepIndex, instrumentId, pitch, octave) {
+  const pat = activePattern();
+  if (!pat || !instrumentId) return;
+  const len = Math.max(1, patternStepCount(pat));
+  const note = { instrumentId, pitch, octave };
+  const existing = pat.channels.find((ch) => rowMatchesNote(ch, note));
+  if (existing?.steps?.[stepIndex]) {
+    existing.steps[stepIndex] = null;
+    persist();
+    renderGrid();
+    updateVelocityUi();
+    return;
+  }
+  const res = ensureKeyRow(pat, note, len);
+  if (res.blocked) {
+    setGridNotice(`row cap (${MAX_CAPTURE_TRACKS}) reached — delete a track first`);
+    return;
+  }
+  res.channel.steps[stepIndex] = { velocity: columnVelocity(stepIndex) };
+  auditionStepNote(instrumentId, pitch, octave);
+  if (res.created) refreshPatternViews();
+  else {
+    persist();
+    renderGrid();
+  }
+  updateVelocityUi();
+}
+
+function copyColumn(stepIndex) {
+  const pat = activePattern();
+  if (!pat) return;
+  stepClipboard = captureColumnSnapshot(pat, stepIndex);
+  setGridNotice(stepClipboard.length
+    ? `copied ${stepClipboard.length} note${stepClipboard.length === 1 ? '' : 's'} from step ${stepIndex + 1}`
+    : 'nothing to copy in that step');
+  renderStepEditor();
+}
+
+function pasteColumn(stepIndex) {
+  const pat = activePattern();
+  if (!pat || !stepClipboard.length) return;
+  const len = Math.max(1, patternStepCount(pat));
+  const written = pasteColumnSnapshot(pat, stepIndex, stepClipboard, { len });
+  refreshPatternViews();
+  setGridNotice(`pasted ${written} note${written === 1 ? '' : 's'} into step ${stepIndex + 1}`);
+}
+
+function clearColumn(stepIndex) {
+  const pat = activePattern();
+  if (!pat) return;
+  let cleared = 0;
+  for (const ch of pat.channels) {
+    if (!ch.steps?.[stepIndex]) continue;
+    ch.steps[stepIndex] = null;
+    cleared += 1;
+  }
+  if (!cleared) return;
+  selectedCell = null;
+  persist();
+  renderGrid();
+  updateVelocityUi();
+}
+
+/** Shift every pitch row's hit in this column by `semis`, reusing rows. */
+function transposeColumn(stepIndex, semis) {
+  const pat = activePattern();
+  if (!pat) return;
+  const len = Math.max(1, patternStepCount(pat));
+  const moves = [];
+  for (const ch of pat.channels) {
+    if (ch.type !== 'note' || !ch.steps?.[stepIndex]) continue;
+    const target = midiNote((channelMidi(ch) ?? 60) + semis);
+    if (!target) continue;
+    moves.push({ ch, target, velocity: ch.steps[stepIndex].velocity });
+  }
+  if (!moves.length) return;
+  for (const move of moves) move.ch.steps[stepIndex] = null;
+  let created = 0;
+  for (const move of moves) {
+    const res = ensureKeyRow(pat, { instrumentId: move.ch.instrumentId, ...move.target }, len);
+    if (!res.channel) continue;
+    if (res.created) created += 1;
+    res.channel.steps[stepIndex] = { velocity: clamp01(move.velocity ?? DEFAULT_VELOCITY) };
+  }
+  // Rows this move emptied are noise now: drop them so +12 then −12 is a no-op
+  // instead of leaving a trail of empty octaves behind.
+  const emptied = new Set();
+  for (const move of moves) {
+    if (move.ch.steps.some(Boolean)) continue;
+    const index = pat.channels.indexOf(move.ch);
+    if (index < 0) continue;
+    pat.channels.splice(index, 1);
+    emptied.add(move.ch.id);
+  }
+  if (selectedCell && emptied.has(selectedCell.channelId)) selectedCell = null;
+  editorColumnKey = ''; // re-frame the mini keyboard on the new register
+  refreshPatternViews();
+  setGridNotice(`column ${semis > 0 ? '+' : ''}${semis} st${created ? ` · +${created} row${created === 1 ? '' : 's'}` : ''}`);
 }
 
 /** Open the full anchored track inspector for one channel row. */
@@ -1233,13 +2105,14 @@ function addTrack(kind = 'note') {
   refreshPatternViews();
 }
 
-function uniqueTrackName(pat, type) {
-  const base = type === 'percussion' ? 'drum' : type === 'chord' ? 'chords' : 'instrument';
+function uniqueTrackName(pat, type, base = '') {
+  const root = (base || (type === 'percussion' ? 'drum' : type === 'chord' ? 'chords' : 'instrument'))
+    .slice(0, 24);
   const taken = new Set(pat.channels.map((c) => c.name));
-  if (!taken.has(base)) return base;
+  if (!taken.has(root)) return root;
   let n = 2;
-  while (taken.has(`${base} ${n}`)) n += 1;
-  return `${base} ${n}`;
+  while (taken.has(`${root} ${n}`)) n += 1;
+  return `${root} ${n}`;
 }
 
 function moveTrack(channelId, delta) {
@@ -1771,11 +2644,15 @@ function renderSession() {
 
 /** Shared stop path: stop button + song end with loop off. */
 function onTransportStopped() {
+  cancelCountIn();
   transport.stop();
   playbackUiActive = false;
   queuedPatternId = null;
   songPlayingPatternIds = new Set();
   clearPlayheads();
+  clearMetronomeLights();
+  // Stopping always ends the take: flush whatever was captured, then disarm.
+  if (capturing) endTake();
   setPlaying(false);
   renderSession();
 }
@@ -2415,7 +3292,16 @@ function onMidiNoteOn(note, velocity, channel) {
   }
 }
 
-function onMidiNoteOff(note) { releaseKey(`midi:${note}`); }
+function onMidiNoteOff(note) {
+  releaseKey(`midi:${note}`);
+  // Hardware pad note-off releases the repeat/arp hold for that pad, if any.
+  for (const b of ['A', 'B']) {
+    for (const [padNum, entry] of Object.entries(padMap[b] || {})) {
+      if (entry?.midiNote !== note) continue;
+      releasePadPerform(b, Number(padNum));
+    }
+  }
+}
 
 function onMidiCC(cc, value, channel) {
   pushMidiLog(`cc ${cc} val ${value}`);
@@ -2671,17 +3557,9 @@ if (joyBox) {
 }
 
 playBtn.addEventListener('click', () => {
-  ensureAudio();
-  // First guaranteed gesture: build the FX chain now so the first knob
-  // sweep has no mid-play master-bus rewire hiccup.
-  try { getFxChain(); } catch { /* offline */ }
-  flushPendingLoads();
-  if (!transport.start()) return;
-  playbackUiActive = true;
-  songPlayingPatternIds = new Set();
-  if (project.playMode === 'song') clearPlayheads();
-  setPlaying(true);
-  renderSession();
+  // Already rolling (or counting in) — the stop button owns that state.
+  if (transport.isRunning()) return;
+  startPlayback();
 });
 stopBtn.addEventListener('click', () => {
   onTransportStopped();
@@ -2711,6 +3589,7 @@ sigSelect.addEventListener('change', () => {
   persist();
   renderGrid();
   renderSession();
+  renderMetronome();
   updateVelocityUi();
 });
 barsSelect.addEventListener('change', () => {
@@ -2902,34 +3781,63 @@ document.querySelector('[data-audition]').addEventListener('click', (e) => {
   if (audition) refreshPerformClock();
   else stopPerform();
 });
-document.querySelector('[data-capture]').addEventListener('click', (e) => {
-  capturing = !capturing;
-  e.currentTarget.classList.toggle('is-on', capturing);
+captureBtn.addEventListener('click', () => {
   if (capturing) {
-    recordBuffer = [];
-    loopOriginTime = ensureAudio().currentTime;
-  } else if (recordBuffer.length) {
-    const pat = activePattern();
-    if (pat) {
-      const sps = 60 / getBpm() / 4;
-      for (const hit of recordBuffer) {
-        const dt = Math.max(0, hit.t - loopOriginTime);
-        const stepIdx = Math.round(dt / sps) % Math.max(1, patternStepCount(activePattern()));
-        let ch = null;
-        if (hit.kind === 'pad' && hit.entry?.target === 'drum') {
-          ch = pat.channels.find((c) => c.type === 'percussion' && c.voiceId === hit.entry.voiceId)
-            || pat.channels.find((c) => c.type === 'percussion');
-          if (ch) ch.kitId = padMap.kits?.[hit.bank] || ch.kitId || DEFAULT_DRUM_KIT_ID;
-        } else if (hit.kind === 'key') {
-          ch = pat.channels.find((c) => c.type === 'note' && c.instrumentId === hit.instrumentId) || null;
-        }
-        if (ch && ch.steps[stepIdx] === null) ch.steps[stepIdx] = { velocity: clamp01(hit.velocity) };
-      }
-      persist();
-      renderGrid();
-    }
-    recordBuffer = [];
+    // Commit the take; the transport keeps rolling.
+    endTake();
+    return;
   }
+  // Arming from a standstill starts playback with the same one-bar count-in,
+  // so the first captured hit lands on the downbeat of bar 1.
+  if (!transport.isRunning()) {
+    startPlayback({ record: true });
+    return;
+  }
+  // Keep the origin handed over by the running loop (`onStep(0)`) instead of
+  // stamping "now": a mid-play take then quantizes to the grid it hears.
+  const armOrigin = loopOriginTime || ensureAudio().currentTime;
+  loopOriginTime = armOrigin;
+  beginTake(armOrigin);
+});
+recordModeSelect?.addEventListener('change', () => {
+  const next = RECORD_MODES.includes(recordModeSelect.value) ? recordModeSelect.value : 'overdub';
+  recordMode = next;
+  saveRecordModePref(next);
+  recordModeSelect.value = next;
+  setGridNotice(next === 'replace'
+    ? 'rec: replace — each pass rewrites the notes it re-plays'
+    : 'rec: overdub — passes layer up');
+});
+document.querySelector('[data-grid-undo]').addEventListener('click', () => {
+  const pat = activePattern();
+  // A take still armed is closed first, so undo rolls back the whole take.
+  if (capturing) endTake();
+  const snap = takeSnapshot;
+  if (!pat || !snap) {
+    setGridNotice('undo take: nothing to roll back');
+    return;
+  }
+  const res = restoreTake(pat, snap);
+  if (!res.restored) {
+    setGridNotice('undo take: nothing to roll back');
+    return;
+  }
+  takeSnapshot = null;
+  lastTake = null;
+  capturePass = 0;
+  captureNotes = 0;
+  selectedCell = null;
+  refreshPatternViews();
+  updateUndoButton();
+  setGridNotice(
+    `undo take: rolled back${res.removed ? ` · dropped ${res.removed} row${res.removed === 1 ? '' : 's'}` : ''}`,
+  );
+});
+metroBtn?.addEventListener('click', () => {
+  metronomePrefs = normalizeMetronomePrefs({ enabled: !metronomePrefs.enabled });
+  saveMetronomePrefs(metronomePrefs);
+  if (!metronomePrefs.enabled) silencePendingClicks();
+  renderMetronome();
 });
 document.querySelector('[data-grid-clear]').addEventListener('click', () => {
   const pat = activePattern();
@@ -2939,6 +3847,19 @@ document.querySelector('[data-grid-clear]').addEventListener('click', () => {
   persist();
   renderGrid();
   updateVelocityUi();
+});
+document.querySelector('[data-grid-tidy]').addEventListener('click', () => {
+  const pat = activePattern();
+  if (!pat) return;
+  const before = pat.channels.length;
+  const removed = pruneEmptyNoteRows(pat);
+  if (!removed) {
+    setGridNotice('tidy: nothing to remove');
+    return;
+  }
+  selectedCell = null;
+  refreshPatternViews();
+  setGridNotice(`tidy: removed ${removed} empty row${removed === 1 ? '' : 's'} (${before} → ${pat.channels.length})`);
 });
 document.querySelector('[data-grid-reset]').addEventListener('click', () => {
   project = resetMbzProject();
@@ -3041,6 +3962,8 @@ function syncControlsFromProject() {
   swingVal.textContent = `${Math.round(clamp01(project.swing) * 100)}%`;
   sigSelect.value = `${project.timeSignature[0]}/${project.timeSignature[1]}`;
   barsSelect.value = String(getBars());
+  if (recordModeSelect) recordModeSelect.value = recordMode;
+  renderMetronome();
   renderKeysInstrumentButton();
   updateProjectNote();
 }

@@ -89,6 +89,18 @@ body {
 .mbz-tb-field input[type="number"], .mbz-tb-field select { padding: 5px 7px; font-size: 12px; }
 .mbz-tb-field input[type="number"] { width: 66px; }
 
+/* Metronome: mute button + one light per beat of the current signature */
+.mbz-metro { display: inline-flex; align-items: center; gap: 8px; border: 1px solid var(--mbz-line); border-radius: 10px; padding: 3px 8px; background: #121016; }
+.mbz-metro .mbz-btn { padding: 4px 9px; font-size: 11px; border-radius: 7px; border-color: transparent; }
+.mbz-metro.is-muted .mbz-metro-dot { opacity: 0.45; }
+.mbz-metro-dots { display: inline-flex; gap: 5px; }
+.mbz-metro-dot { width: 9px; height: 9px; border-radius: 50%; background: #2f2a3c; border: 1px solid #453f57; transition: background 0.06s linear, box-shadow 0.12s ease, transform 0.06s ease; }
+.mbz-metro-dot.is-accent { border-color: #4f6a5f; }
+.mbz-metro-dot.is-lit { background: var(--mbz-accent-2); box-shadow: 0 0 8px rgba(87, 230, 168, 0.75); transform: scale(1.12); }
+.mbz-metro-dot.is-accent.is-lit { background: #b8ffe1; }
+.mbz-metro.is-count-in .mbz-metro-dot.is-lit { background: var(--mbz-accent); box-shadow: 0 0 10px rgba(255, 93, 93, 0.8); }
+.mbz-metro.is-count-in .mbz-metro-dot.is-accent.is-lit { background: #ffb4b4; }
+
 /* Stage: transport + clips rail + grid panel + arrangement, all in one block */
 .mbz-stage { display: grid; gap: 10px; }
 .mbz-stage-body { display: grid; gap: 10px; grid-template-columns: 1fr; }
@@ -188,6 +200,33 @@ body {
 .mbz-cell { width: 22px; height: 26px; border-radius: 5px; border: 1px solid #3d3850; background: #211e2e; padding: 0; cursor: pointer; }
 .mbz-cell.is-on { background: var(--mbz-accent); border-color: var(--mbz-accent); }
 .mbz-cell.is-playhead { outline: 2px solid var(--mbz-accent-2); }
+.mbz-cell.is-dragging { opacity: 0.35; }
+.mbz-cell.is-drop, .mbz-ruler-cell.is-drop { outline: 2px dashed var(--mbz-accent-2); outline-offset: 1px; }
+body.mbz-dragging { cursor: grabbing; }
+body.mbz-dragging .mbz-cell, body.mbz-dragging .mbz-ruler-cell { cursor: grabbing; }
+/* Pitch rows carry their own hue so a stacked chord stays legible. */
+.mbz-ch-row.is-pitch .mbz-cell.is-on { background: hsl(var(--row-hue, 8) 78% 62%); border-color: hsl(var(--row-hue, 8) 78% 52%); }
+.mbz-ch-pitch { font-size: 11px; font-weight: 700; letter-spacing: 0.02em; color: var(--mbz-text); margin-right: 4px; }
+.mbz-ch-label { font-size: 11px; color: var(--mbz-dim); }
+.mbz-ch-row.is-ruler { margin-bottom: 6px; align-items: end; }
+.mbz-ch-row.is-ruler .mbz-ch-head { justify-content: flex-end; font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--mbz-dim); }
+.mbz-ruler-cell { width: 22px; height: 20px; display: flex; align-items: center; justify-content: center; font-size: 9px; color: #4a4560; border-radius: 4px; user-select: none; cursor: grab; overflow: visible; }
+.mbz-ruler-cell.is-beat { color: var(--mbz-dim); font-variant-numeric: tabular-nums; }
+.mbz-ruler-cell.is-chord { color: var(--mbz-accent-3); font-size: 10px; font-weight: 600; letter-spacing: -0.01em; }
+.mbz-step-editor { display: grid; gap: 6px; margin-top: 8px; padding: 8px; border: 1px solid var(--mbz-line); border-radius: 10px; background: #121016; }
+.mbz-step-editor[hidden] { display: none; }
+.mbz-step-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 12px; color: var(--mbz-dim); }
+.mbz-step-title { color: var(--mbz-text); font-variant-numeric: tabular-nums; }
+.mbz-step-chord { padding: 1px 7px; border-radius: 999px; border: 1px solid var(--mbz-line); font-size: 11px; color: var(--mbz-dim); }
+.mbz-step-chord.is-on { border-color: var(--mbz-accent-3); color: var(--mbz-accent-3); font-weight: 700; }
+.mbz-step-tools { display: flex; flex-wrap: wrap; gap: 4px; margin-left: auto; }
+.mbz-step-btn { font-size: 11px; padding: 3px 8px; }
+.mbz-step-btn:disabled { opacity: 0.4; cursor: default; }
+.mbz-step-hint { font-size: 11px; color: #4a4560; }
+.mbz-kb-mini { padding: 4px; }
+.mbz-kb-mini .mbz-key.white { min-width: 22px; height: 54px; }
+.mbz-kb-mini .mbz-key.black { min-width: 15px; height: 34px; margin: 0 -8px; }
+.mbz-key.is-in-step { background: var(--mbz-accent-3); color: #120f1a; }
 .mbz-vel-row { display: flex; gap: 8px; align-items: center; margin-top: 8px; font-size: 12px; color: var(--mbz-dim); }
 .mbz-keys-bar { display: flex; gap: 10px; margin-bottom: 8px; font-size: 12px; color: var(--mbz-dim); }
 .mbz-keyboard { display: flex; gap: 2px; overflow-x: auto; padding: 6px; background: #0f0d14; border: 1px solid var(--mbz-line); border-radius: 10px; }

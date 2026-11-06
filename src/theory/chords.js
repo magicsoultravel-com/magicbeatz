@@ -13,7 +13,17 @@ import {
   getRoot,
   getTheoryNotes,
   normalizePitch,
+  pitchToIndex,
 } from './music.js';
+
+/** Common suffixes; also the preference order when naming a stack. */
+const FALLBACK_INTERVALS = {
+  '': '0 4 7', m: '0 3 7', dim: '0 3 6', aug: '0 4 8',
+  7: '0 4 7 10', maj7: '0 4 7 11', m7: '0 3 7 10',
+  dim7: '0 3 6 9', m7b5: '0 3 6 10', sus2: '0 2 7', sus4: '0 5 7',
+  6: '0 4 7 9', m6: '0 3 7 9', 9: '0 4 7 10 14', m9: '0 3 7 10 14',
+  add9: '0 4 7 14', madd9: '0 3 7 14',
+};
 
 /** Spread pitch classes across registers so chords don't stack on one octave. */
 export function spreadChordPitches(notes) {
@@ -38,14 +48,81 @@ export function intervalsForChordName(name, chordsTheory = {}) {
     if (!data || typeof data.intervals !== 'string') continue;
     if (theorySuffix(data.short) === rest) return { root, intervals: data.intervals };
   }
-  const FALLBACK = {
-    '': '0 4 7', m: '0 3 7', dim: '0 3 6', aug: '0 4 8',
-    7: '0 4 7 10', maj7: '0 4 7 11', m7: '0 3 7 10',
-    dim7: '0 3 6 9', m7b5: '0 3 6 10', sus2: '0 2 7', sus4: '0 5 7',
-    '6': '0 4 7 9', m6: '0 3 7 9', 9: '0 4 7 10 14', m9: '0 3 7 10 14',
-    add9: '0 4 7 14', madd9: '0 3 7 14',
-  };
-  return { root, intervals: FALLBACK[rest] || '0 4 7' };
+  return { root, intervals: FALLBACK_INTERVALS[rest] || '0 4 7' };
+}
+
+/** Pitch-class set of an interval string ("0 4 7 14" -> [0, 2, 4, 7]). */
+function intervalClasses(intervals) {
+  const set = new Set(
+    String(intervals || '')
+      .split(/\s+/)
+      .map(Number)
+      .filter((n) => Number.isFinite(n))
+      .map((n) => ((n % 12) + 12) % 12),
+  );
+  return [...set].sort((a, b) => a - b);
+}
+
+/** Every suffix we can name, mapped to its pitch-class set (theory data wins). */
+export function chordIntervalTable(chordsTheory = {}) {
+  const map = new Map();
+  for (const data of Object.values(chordsTheory || {})) {
+    if (!data || typeof data.intervals !== 'string') continue;
+    const suffix = theorySuffix(data.short);
+    if (!map.has(suffix)) map.set(suffix, data.intervals);
+  }
+  for (const [suffix, intervals] of Object.entries(FALLBACK_INTERVALS)) {
+    if (!map.has(suffix)) map.set(suffix, intervals);
+  }
+  return map;
+}
+
+/**
+ * Name a stack of notes by inverting the interval table: try each sounding
+ * pitch as the root (bass note first, because that is what players hear) and
+ * keep the first exact pitch-class match. Returns null when nothing fits —
+ * callers show no badge rather than a wrong chord symbol.
+ * @param {Array<{pitch: string, octave?: number}>} notes
+ * @returns {{root: string, suffix: string}|null}
+ */
+export function nameChord(notes, chordsTheory = {}) {
+  const midis = [];
+  for (const note of notes || []) {
+    const idx = pitchToIndex(note?.pitch);
+    if (idx < 0) continue;
+    midis.push(idx + ((note.octave ?? 4) + 1) * 12);
+  }
+  if (!midis.length) return null;
+  midis.sort((a, b) => a - b);
+  // Distinct pitch classes, and the bass-first order to try as roots.
+  const classes = [...new Set(midis.map((m) => m % 12))].sort((a, b) => a - b);
+  if (classes.length < 2) return null;
+  const rootOrder = [...new Set(midis.map((m) => m % 12))];
+  const table = chordIntervalTable(chordsTheory);
+  const rank = new Map([...table.keys()].map((suffix, i) => [suffix, i]));
+  for (const rootPc of rootOrder) {
+    const rel = classes.map((pc) => (pc - rootPc + 12) % 12).sort((a, b) => a - b);
+    let best = null;
+    for (const [suffix, intervals] of table) {
+      const set = intervalClasses(intervals);
+      if (set.length !== rel.length) continue;
+      let match = true;
+      for (let i = 0; i < set.length; i += 1) {
+        if (set[i] !== rel[i]) { match = false; break; }
+      }
+      if (!match) continue;
+      const order = rank.get(suffix) ?? 999;
+      if (!best || order < best.order) best = { suffix, order };
+    }
+    if (best) return { root: CHROMATIC[rootPc], suffix: best.suffix };
+  }
+  return null;
+}
+
+/** "Am7" for a stack of notes, or '' when it isn't a chord we can name. */
+export function chordLabel(notes, chordsTheory = {}) {
+  const found = nameChord(notes, chordsTheory);
+  return found ? `${found.root}${found.suffix}` : '';
 }
 
 /**
