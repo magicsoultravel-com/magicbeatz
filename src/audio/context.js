@@ -13,6 +13,12 @@ let audioCtx = null;
 let masterGain = null;
 let unlockArmed = false;
 
+/** Master volume (0..1) — plain output level, pre-FX bus only.
+ *  Lives here, not on the AudioParam, so knobs/sliders read a stable value
+ *  before the first gesture (peekMasterGain() is null until the bus exists). */
+let masterLevel = 1;
+const MASTER_SMOOTH_TC = 0.02;
+
 function armUnlock() {
   if (unlockArmed || typeof window === 'undefined') return;
   unlockArmed = true;
@@ -54,7 +60,7 @@ export function getMasterBus() {
   const ctx = getAudioContext();
   if (!masterGain || masterGain.context !== ctx) {
     masterGain = ctx.createGain();
-    masterGain.gain.value = 1;
+    masterGain.gain.value = masterLevel;
     // If the FX chain already exists for this context it owns the routing;
     // otherwise direct to destination until the chain is built.
     try {
@@ -73,6 +79,23 @@ export function peekMasterGain() {
     return Math.min(1, Math.max(0, masterGain.gain.value));
   } catch { return null; }
 }
+
+/** Master volume — plain output level (0..1), never an FX send.
+ *  Stores the value pre-gesture so the first getMasterBus() comes up at the
+ *  right level, and ramps live changes to keep 7-bit CC steps from zippering. */
+export function setMasterLevel(v) {
+  masterLevel = Math.min(1, Math.max(0, Number(v) || 0));
+  if (!masterGain) return masterLevel; // applied when the bus is built
+  try {
+    masterGain.gain.setTargetAtTime(masterLevel, audioCtx.currentTime, MASTER_SMOOTH_TC);
+  } catch {
+    try { masterGain.gain.value = masterLevel; } catch { /* detached */ }
+  }
+  return masterLevel;
+}
+
+/** Stored master level — readable before any gesture. */
+export function peekMasterLevel() { return masterLevel; }
 
 /**
  * Cross-module hook so getMasterBus() can reconnect through the FX chain

@@ -79,6 +79,7 @@ body {
 .mbz-fx-grid { display: grid; gap: 6px; }
 .mbz-fx-grid label { display: grid; grid-template-columns: 44px 1fr 58px; gap: 8px; align-items: center; font-size: 11px; color: var(--mbz-dim); }
 .mbz-fx-grid input[type="range"] { accent-color: #c07bff; width: 100%; }
+.mbz-fx-grid label.mbz-fx-out { margin-top: 2px; padding-top: 7px; border-top: 1px dashed var(--mbz-line); }
 .mbz-fx-grid span { text-align: right; font-variant-numeric: tabular-nums; color: var(--mbz-accent-2); font-size: 11px; }
 /* Merged transport bar inside the stage block */
 .mbz-transport-bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding-bottom: 9px; border-bottom: 1px solid var(--mbz-line); }

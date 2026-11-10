@@ -16,7 +16,7 @@ import {
 
 export function registerCoreParams(deps) {
   const {
-    getProject, syncTransportUI, persist, getMasterGain, peekMasterGain,
+    getProject, syncTransportUI, persist, setMasterLevel, peekMasterLevel,
   } = deps;
 
   registerParam({
@@ -50,8 +50,8 @@ export function registerCoreParams(deps) {
   registerParam({
     id: 'master', label: 'Master Volume', short: 'Master', group: 'mix',
     min: 0, max: 1, unit: 'dB', curveHint: 'exp',
-    get: () => peekMasterGain?.() ?? 1,
-    set: (v) => { try { getMasterGain().gain.value = clamp01(v); } catch { /* pre-gesture */ } },
+    get: () => peekMasterLevel?.() ?? 1,
+    set: (v) => { setMasterLevel?.(clamp01(v)); },
     format: formatDb,
     fromNorm: (n) => clamp01(n) ** 1.5, // perceptual loudness
     toNorm: (v) => clamp01(v) ** (1 / 1.5),

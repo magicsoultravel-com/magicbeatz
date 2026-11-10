@@ -49,7 +49,7 @@ import {
   PC_NOTE_OFFSETS, midiRangeForKeys,
 } from '../midi/notes.js';
 import { DEFAULT_KEYS_INSTRUMENT } from '../state/settings.js';
-import { getMasterBus, peekMasterGain } from '../audio/context.js';
+import { setMasterLevel, peekMasterLevel } from '../audio/context.js';
 import { getFxChain } from '../audio/fx.js';
 import { registerCoreParams, registerChannelGains, resolveBinding, syncDelayToBpm } from '../params/coreParams.js';
 import { loadKnobMap, saveKnobMap, bindingFor, knobConflicts } from '../params/bindings.js';
@@ -238,6 +238,8 @@ const fxDelay = $('[data-fx-delay]');
 const fxDelayVal = $('[data-fx-delay-val]');
 const fxVerb = $('[data-fx-verb]');
 const fxVerbVal = $('[data-fx-verb-val]');
+const fxMaster = $('[data-fx-master]');
+const fxMasterVal = $('[data-fx-master-val]');
 // Session block refs (added with the clip launcher + arrangement timeline).
 const modeLiveBtn = $('[data-mode-live]');
 const modeSongBtn = $('[data-mode-song]');
@@ -3227,6 +3229,9 @@ function applyKnobDrag(knobId, value01) {
   try { desc.set(normToParam(value01, binding, desc)); } catch { /* ignore */ }
   paintKnobArc(knobId, { norm: value01 });
   syncControlsFromProject();
+  // A dragged/arrow-keyed knob is the same write path as MIDI, so the FX
+  // strip sliders (views on the same params) have to follow it too.
+  syncFxStrip();
   if (knobPopoverKnob) renderKnobPopoverValues();
 }
 
@@ -3709,6 +3714,7 @@ function syncFxStrip() {
     const f = getParam('filter');
     const d = getParam('delayMix');
     const r = getParam('reverbMix');
+    const m = getParam('master');
     if (f && fxFilter) {
       const n = paramToNorm(f.get(), { min: 0, max: 1, curve: 'linear' }, f);
       fxFilter.value = String(Math.round(n * 100));
@@ -3721,6 +3727,11 @@ function syncFxStrip() {
     if (r && fxVerb) {
       fxVerb.value = String(Math.round(clamp01(r.get()) * 100));
       if (fxVerbVal) fxVerbVal.textContent = r.format(r.get());
+    }
+    if (m && fxMaster) {
+      const n = paramToNorm(m.get(), { min: 0, max: 1, curve: 'linear' }, m);
+      fxMaster.value = String(Math.round(n * 100));
+      if (fxMasterVal) fxMasterVal.textContent = m.format(m.get());
     }
   } catch { /* pre-gesture */ }
 }
@@ -3741,6 +3752,15 @@ if (fxDelay) fxDelay.addEventListener('input', () => {
 });
 if (fxVerb) fxVerb.addEventListener('input', () => {
   try { getParam('reverbMix')?.set(clamp01(parseInt(fxVerb.value, 10) / 100)); } catch { /* ignore */ }
+  syncFxStrip();
+  refreshKnobUIFromParams(knobMap, activePattern, paintKnobArc);
+  if (knobPopoverKnob) renderKnobPopoverValues();
+});
+if (fxMaster) fxMaster.addEventListener('input', () => {
+  try {
+    const m = getParam('master');
+    if (m) m.set(m.fromNorm(clamp01(parseInt(fxMaster.value, 10) / 100)));
+  } catch { /* ignore */ }
   syncFxStrip();
   refreshKnobUIFromParams(knobMap, activePattern, paintKnobArc);
   if (knobPopoverKnob) renderKnobPopoverValues();
@@ -4050,8 +4070,8 @@ registerCoreParams({
   getProject: () => project,
   syncTransportUI: syncControlsFromProject,
   persist,
-  getMasterGain: getMasterBus,
-  peekMasterGain: () => peekMasterGain() ?? 1,
+  setMasterLevel,
+  peekMasterLevel,
 });
 syncParamRegistry();
 syncFxStrip();
