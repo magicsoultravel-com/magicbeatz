@@ -33,6 +33,7 @@ modules, so any static server works too.
 - `src/midi/` → connection / firmware SysEx inquiry / note helpers
 - `src/keys/perform.js` → note repeat + arpeggiator (rates, arp sequences, perform clock)
 - `src/sequencer/metronome.js` → beat/lamp mapping + count-in math (pure)
+- `src/sequencer/staff.js` → staff-view grouping + notation layout (pure)
 - `src/audio/metronome.js` → the click voice (osc blip on the master bus)
 - `src/state/` → store (isolated keys) + settings (knob CCs, octaves)
 - `tests/arrangement.test.mjs` → 16-bar Looper timeline, migration and song-resolution tests
@@ -40,6 +41,7 @@ modules, so any static server works too.
 - `tests/perform.test.mjs` → repeat/arp rates, arp ordering, pref normalization, step-gate fit tests
 - `tests/sampler-step.test.mjs` → gated sample step events (duration/release/unique stopId)
 - `tests/metronome.test.mjs` → beat/lamp mapping, count-in plan and pref normalization
+- `tests/staff-view.test.mjs` → staff grouping/merging, pitch placement and ledger lines
 - `assets/` → notes/chords/scales/chords-theory JSON
 
 ## Sounds
@@ -170,6 +172,23 @@ Details:
   plus `−8ve` / `+8ve`, copy / paste / clear for the whole column and step
   stepping `◀ ▶`.
 
+## Staff view
+
+- The **staff** button next to the metronome flips the grid pane into a
+  read-only score: one staff per instrument instead of one row per pitch.
+  Nothing in this view is clickable — switch back to **grid** to edit.
+- Note rows are merged by `instrumentId` (bass `C2`, `E2`, `G2` become a single
+  bass staff, highest pitch on top), chord tracks keep a staff each and resolve
+  their voicing, and every drum voice keeps its own single-line staff.
+- Instruments with no steps are dropped, so an empty clip shows a hint instead
+  of a wall of blank rows. The head shows the written range (`C4–G4`) or the
+  hit count for drums.
+- Pitch is placed on five lines centred on the part's own register: sharps and
+  flats sit on their letter's line (with an accidental), notes outside the
+  staff get ledger lines, and the row grows to fit. Beat/bar rules and the
+  playhead line up with the step columns, so staff and grid stay in sync.
+- The chosen view is remembered in `magicbeatz-grid-view-v1`.
+
 ## Arrangement timeline
 
 - The arrangement canvas is **16 bars** long. Fresh and reset projects open
@@ -233,5 +252,6 @@ Details:
 - `magicbeatz-keys-perform-v1` holds the repeat/arp prefs (toggles, rates, arp
   mode, octaves, latch); invalid or hand-edited values fall back to defaults.
 - `magicbeatz-metronome-v1` holds just the click toggle ({ enabled }).
+- `magicbeatz-grid-view-v1` remembers the grid pane's view ({ mode: 'grid' | 'staff' }).
 - One-shot read-only import from legacy `guitarsuite-magicbeatz`, never
   writes back.

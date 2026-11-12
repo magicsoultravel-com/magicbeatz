@@ -102,6 +102,27 @@ body {
 .mbz-metro.is-count-in .mbz-metro-dot.is-lit { background: var(--mbz-accent); box-shadow: 0 0 10px rgba(255, 93, 93, 0.8); }
 .mbz-metro.is-count-in .mbz-metro-dot.is-accent.is-lit { background: #ffb4b4; }
 
+/* Grid view toggle (steps ⇄ staff), parked next to the metronome */
+.mbz-view-toggle { display: inline-flex; align-items: center; border: 1px solid var(--mbz-line); border-radius: 10px; padding: 3px 6px; background: #121016; }
+.mbz-view-toggle .mbz-btn { padding: 4px 9px; font-size: 11px; border-radius: 7px; border-color: transparent; }
+
+/* Staff view: one read-only staff per instrument (geometry from sequencer/staff.js) */
+.mbz-staff-row { display: grid; grid-template-columns: 168px auto; gap: 4px; align-items: center; margin-bottom: 6px; }
+.mbz-staff-head { display: flex; align-items: center; gap: 6px; min-width: 0; padding: 0 2px; }
+.mbz-staff-name { flex: 1 1 auto; min-width: 0; font-size: 12px; font-weight: 650; color: var(--mbz-text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mbz-staff-range { flex: 0 0 auto; font-size: 10px; color: var(--mbz-dim); border: 1px solid var(--mbz-line); border-radius: 999px; padding: 1px 6px; font-variant-numeric: tabular-nums; }
+.mbz-staff-sheet { position: relative; width: calc(var(--steps, 16) * 26px - 4px); height: var(--staff-h, 52px); background: #17141f; border-radius: 6px; overflow: hidden; }
+.mbz-staff-tick { position: absolute; top: 0; bottom: 0; width: 1px; background: #262135; }
+.mbz-staff-tick.is-bar { background: #453d59; }
+.mbz-staff-step { position: absolute; top: 0; bottom: 0; width: 22px; z-index: 1; pointer-events: none; }
+.mbz-staff-step.is-playhead { background: rgba(87, 230, 168, 0.16); box-shadow: inset 0 0 0 1px rgba(87, 230, 168, 0.4); }
+.mbz-staff-line { position: absolute; left: 0; right: 0; height: 1px; background: #3b3450; }
+.mbz-staff-ledger { position: absolute; width: 16px; height: 1px; margin-left: -8px; background: #6c628a; }
+.mbz-staff-note { position: absolute; z-index: 2; width: 9px; height: 7px; border-radius: 50%; background: hsl(var(--row-hue, 8) 78% 62%); transform: translate(-50%, -50%) rotate(-18deg); box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35); }
+.mbz-staff-acc { position: absolute; left: -8px; top: 50%; transform: translateY(-50%) rotate(18deg); font-size: 9px; line-height: 1; font-weight: 700; color: var(--mbz-text); }
+.mbz-staff-row.is-percussion .mbz-staff-note { border-radius: 2px; transform: translate(-50%, -50%) rotate(45deg); background: var(--mbz-accent-3); }
+.mbz-staff-empty { margin: 0; padding: 14px 4px; font-size: 12px; color: var(--mbz-dim); }
+
 /* Stage: transport + clips rail + grid panel + arrangement, all in one block */
 .mbz-stage { display: grid; gap: 10px; }
 .mbz-stage-body { display: grid; gap: 10px; grid-template-columns: 1fr; }

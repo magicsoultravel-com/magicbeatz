@@ -23,6 +23,10 @@ import {
   METRONOME_PREFS_KEY, COUNT_IN_BARS,
   normalizeMetronomePrefs, beatInfoForStep, countInClickPlan, countInSeconds,
 } from '../sequencer/metronome.js';
+import {
+  GRID_VIEW_PREFS_KEY, STAFF_COL_PITCH,
+  normalizeGridViewPrefs, buildStaffGroups, layoutStaffGroup, staffRangeLabel,
+} from '../sequencer/staff.js';
 import { playChannelHit } from '../audio/banks.js';
 import {
   MAX_CAPTURE_TRACKS, applyCaptureHits, captureColumnSnapshot, channelMidi, columnNotes,
@@ -115,6 +119,9 @@ let metronomePrefs = loadMetronomePrefs();
 let countInState = null; // { endsAt, beats, timerId } while the count-in bar runs
 let metroDotCount = 0; // lights currently built (= beats in the signature)
 let liveClicks = []; // click envelopes scheduled on the audio clock
+// Grid pane view: 'grid' = interactive steps, 'staff' = read-only notation for
+// the same clip (one staff per instrument, see sequencer/staff.js).
+let gridView = loadGridViewPrefs().mode;
 let selectedCell = null;
 let keysCurve = 'linear';
 let keysInstrumentId = DEFAULT_KEYS_INSTRUMENT;
@@ -210,6 +217,7 @@ const recordModeSelect = $('[data-record-mode]');
 const metroGroupEl = $('.mbz-metro');
 const metroBtn = $('[data-metro]');
 const metroDotsEl = $('[data-metro-dots]');
+const staffViewBtn = $('[data-grid-view]');
 const projectNote = $('[data-project-note]');
 const padsEl = $('[data-pads]');
 const gridEl = $('[data-grid]');
@@ -388,12 +396,26 @@ function getTotalSteps() {
   return patternStepCount(activePattern());
 }
 
+/** Clear the playhead from whichever grid view is mounted (steps or staves). */
+function clearPlayheadMarks() {
+  gridEl
+    .querySelectorAll('.mbz-cell.is-playhead, .mbz-staff-step.is-playhead')
+    .forEach((c) => c.classList.remove('is-playhead'));
+}
+
+/** Both views tag their columns with data-step, so one selector paints both. */
+function playheadMarks(step) {
+  return gridEl.querySelectorAll(
+    `.mbz-cell[data-step="${step}"], .mbz-staff-step[data-step="${step}"]`,
+  );
+}
+
 function schedulePlayhead(when, localStep) {
   const delay = Math.max(0, (when - getAudioContext().currentTime) * 1000 - 8);
   window.setTimeout(() => {
     if (!playbackUiActive) return;
-    gridEl.querySelectorAll('.mbz-cell.is-playhead').forEach((c) => c.classList.remove('is-playhead'));
-    gridEl.querySelectorAll(`.mbz-cell[data-step="${localStep}"]`).forEach((c) => c.classList.add('is-playhead'));
+    clearPlayheadMarks();
+    playheadMarks(localStep).forEach((c) => c.classList.add('is-playhead'));
   }, delay);
 }
 
@@ -451,7 +473,7 @@ function scheduleArrangePlayhead(when, slotIndex, stepInSlot = 0) {
 }
 
 function clearPlayheads() {
-  gridEl.querySelectorAll('.mbz-cell.is-playhead').forEach((c) => c.classList.remove('is-playhead'));
+  clearPlayheadMarks();
   arrangeEl?.querySelectorAll('.mbz-slot.is-playhead').forEach((c) => c.classList.remove('is-playhead'));
   arrangeEl?.classList.remove('has-playhead');
   arrangeEl?.style.removeProperty('--playhead-x');
@@ -463,7 +485,7 @@ function scheduleGridClear(when) {
   const delay = Math.max(0, (when - getAudioContext().currentTime) * 1000 - 8);
   window.setTimeout(() => {
     if (!playbackUiActive) return;
-    gridEl.querySelectorAll('.mbz-cell.is-playhead').forEach((c) => c.classList.remove('is-playhead'));
+    clearPlayheadMarks();
   }, delay);
 }
 
@@ -614,6 +636,37 @@ function loadMetronomePrefs() {
 
 function saveMetronomePrefs(prefs) {
   try { localStorage.setItem(METRONOME_PREFS_KEY, JSON.stringify(prefs)); } catch { /* ignore */ }
+}
+
+// ---------- grid view (steps ⇄ staff) ----------
+
+function loadGridViewPrefs() {
+  try {
+    const raw = localStorage.getItem(GRID_VIEW_PREFS_KEY);
+    return normalizeGridViewPrefs(raw ? JSON.parse(raw) : null);
+  } catch {
+    return normalizeGridViewPrefs(null);
+  }
+}
+
+function saveGridViewPrefs(prefs) {
+  try {
+    localStorage.setItem(GRID_VIEW_PREFS_KEY, JSON.stringify(normalizeGridViewPrefs(prefs)));
+  } catch { /* ignore */ }
+}
+
+/** Paint the staff toggle + the grid pane's view flag (called from renderGrid). */
+function renderGridViewButton() {
+  const on = gridView === 'staff';
+  if (staffViewBtn) {
+    staffViewBtn.classList.toggle('is-on', on);
+    staffViewBtn.setAttribute('aria-pressed', String(on));
+    staffViewBtn.title = on
+      ? 'Staff view on — click for the step grid'
+      : 'Staff view — one staff per instrument, notes placed by pitch';
+  }
+  gridEl.classList.toggle('is-staff-view', on);
+  gridEl.setAttribute('aria-label', on ? 'Staff view — read-only notation' : 'Step sequencer');
 }
 
 /** Paint the mute button + one light per beat of the current signature. */
@@ -1348,7 +1401,9 @@ function trackName(ch) {
 let gridNotice = '';
 let gridNoticeTimer = 0;
 function gridTitleText(pat) {
-  const base = `${pat.name} · ${pat.bars}b · ${pat.channels.length} track${pat.channels.length === 1 ? '' : 's'}`;
+  const tracks = `${pat.channels.length} track${pat.channels.length === 1 ? '' : 's'}`;
+  const view = gridView === 'staff' ? ' · staff view' : '';
+  const base = `${pat.name} · ${pat.bars}b · ${tracks}${view}`;
   return gridNotice ? `${base} · ${gridNotice}` : base;
 }
 function setGridNotice(text = '', ms = 4000) {
@@ -1391,6 +1446,7 @@ function renderGrid() {
   const pat = activePattern();
   closeTrackPopover({ notify: false });
   gridEl.innerHTML = '';
+  renderGridViewButton();
   if (!pat) return;
   const n = patternStepCount(pat);
   gridEl.style.setProperty('--steps', String(n));
@@ -1398,6 +1454,15 @@ function renderGrid() {
     gridTitleEl.textContent = gridTitleText(pat);
   }
   gridEl.appendChild(renderRulerRow(pat, n));
+  if (gridView === 'staff') {
+    renderStaffGrid(pat, n);
+    return;
+  }
+  renderStepGrid(pat, n);
+}
+
+/** Interactive step rows: one row per channel (the original grid). */
+function renderStepGrid(pat, n) {
   let popoverAnchor = null;
   let popoverIndex = -1;
   pat.channels.forEach((ch, chIndex) => {
@@ -1508,6 +1573,121 @@ function renderGrid() {
     trackPopoverId = null;
   }
   renderStepEditor();
+}
+
+/**
+ * Read-only staff view: one staff per instrument, pitch rows merged, empty
+ * instruments dropped. The sheet carries no controls — only the passive
+ * playhead highlight that schedulePlayhead() paints on .mbz-staff-step.
+ */
+function renderStaffGrid(pat, n) {
+  const groups = buildStaffGroups(pat, {
+    stepCount: n,
+    instrumentLabel: (id) => (id ? instrumentLabel(id) : 'instrument'),
+    resolveChordNotes: (ch) => chordEntriesFor(ch, chordCtx()),
+  });
+  // The step inspector edits individual pitch rows, which this view merges away.
+  if (stepEditorEl) {
+    stepEditorEl.hidden = true;
+    stepEditorEl.textContent = '';
+  }
+  if (!groups.length) {
+    const empty = document.createElement('p');
+    empty.className = 'mbz-staff-empty';
+    empty.textContent = 'no notes in this clip yet — switch back to grid to program them';
+    gridEl.appendChild(empty);
+    return;
+  }
+  const beatSteps = Math.max(1, STEPS_PER_BEAT);
+  const barSteps = beatSteps * Math.max(1, getBeats());
+  for (const group of groups) {
+    const layout = layoutStaffGroup(group);
+    if (!layout) continue;
+    const row = document.createElement('div');
+    row.className = `mbz-staff-row is-${group.kind}`;
+    row.dataset.groupKey = group.key;
+    row.style.setProperty('--steps', String(n));
+    row.style.setProperty('--staff-h', `${layout.height}px`);
+    if (group.kind !== 'percussion') {
+      row.style.setProperty('--row-hue', String(rowHue({
+        instrumentId: group.instrumentId,
+        voiceId: group.voiceId,
+        type: group.kind,
+      })));
+    }
+
+    const head = document.createElement('div');
+    head.className = 'mbz-staff-head';
+    const name = document.createElement('span');
+    name.className = 'mbz-staff-name';
+    name.textContent = group.label;
+    name.title = group.channelIds.length > 1
+      ? `${group.label} · ${group.channelIds.length} pitch rows merged`
+      : group.label;
+    head.appendChild(name);
+    const range = staffRangeLabel(group);
+    if (range) {
+      const pill = document.createElement('span');
+      pill.className = 'mbz-staff-range';
+      pill.textContent = range;
+      head.appendChild(pill);
+    }
+    row.appendChild(head);
+
+    const sheet = document.createElement('div');
+    sheet.className = 'mbz-staff-sheet';
+    sheet.setAttribute('role', 'img');
+    sheet.setAttribute('aria-label', `${group.label} staff${range ? `, ${range}` : ''}`);
+
+    // Beat / bar rules first so they sit behind the ink.
+    for (let i = 0; i < n; i += beatSteps) {
+      const tick = document.createElement('i');
+      tick.className = `mbz-staff-tick${i % barSteps === 0 ? ' is-bar' : ''}`;
+      tick.style.left = `${i * STAFF_COL_PITCH}px`;
+      sheet.appendChild(tick);
+    }
+    // Passive playhead columns (painted by schedulePlayhead, never clicked).
+    for (let i = 0; i < n; i += 1) {
+      const col = document.createElement('i');
+      col.className = 'mbz-staff-step';
+      col.dataset.step = String(i);
+      col.style.left = `${i * STAFF_COL_PITCH}px`;
+      sheet.appendChild(col);
+    }
+    for (const line of layout.lines) {
+      const el = document.createElement('i');
+      el.className = 'mbz-staff-line';
+      el.style.top = `${line.y}px`;
+      sheet.appendChild(el);
+    }
+    for (const ledger of layout.ledgers) {
+      const el = document.createElement('i');
+      el.className = 'mbz-staff-ledger';
+      el.style.top = `${ledger.y}px`;
+      el.style.left = `${ledger.x}px`;
+      sheet.appendChild(el);
+    }
+    for (const note of layout.notes) {
+      const glyph = document.createElement('span');
+      glyph.className = `mbz-staff-note${note.accidental ? ' has-accidental' : ''}`;
+      glyph.style.left = `${note.x}px`;
+      glyph.style.top = `${note.y}px`;
+      glyph.style.opacity = String((0.55 + 0.45 * note.velocity).toFixed(2));
+      glyph.title = group.kind === 'percussion'
+        ? `${group.label} · step ${note.step + 1}`
+        : `${pitchLabel(note.pitch, note.octave ?? 4)} · step ${note.step + 1}`;
+      if (note.accidental) {
+        const acc = document.createElement('b');
+        acc.className = 'mbz-staff-acc';
+        acc.textContent = note.accidental === '#' ? '♯' : '♭';
+        glyph.appendChild(acc);
+      }
+      sheet.appendChild(glyph);
+    }
+
+    row.appendChild(sheet);
+    gridEl.appendChild(row);
+  }
 }
 
 /** Hue per instrument so a dozen pitch rows stay readable. */
@@ -3858,6 +4038,13 @@ metroBtn?.addEventListener('click', () => {
   saveMetronomePrefs(metronomePrefs);
   if (!metronomePrefs.enabled) silencePendingClicks();
   renderMetronome();
+});
+staffViewBtn?.addEventListener('click', () => {
+  gridView = gridView === 'staff' ? 'grid' : 'staff';
+  saveGridViewPrefs({ mode: gridView });
+  if (gridView === 'staff') trackPopoverId = null;
+  renderGrid();
+  updateVelocityUi();
 });
 document.querySelector('[data-grid-clear]').addEventListener('click', () => {
   const pat = activePattern();
