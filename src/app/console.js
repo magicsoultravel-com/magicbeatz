@@ -43,6 +43,9 @@ import {
 import { chordEntriesFor, chordLabel, chordNameOptions } from '../theory/chords.js';
 import { loadMbzProject, saveMbzProject, resetMbzProject } from '../state/store.js';
 import {
+  parseProjectFile, projectFileName, stringifyProjectFile, summarizeProject,
+} from '../state/project-file.js';
+import {
   loadPadMap, savePadMap, applyCurve, PAD_ORDER, getLearnSlot, setLearnSlot,
   findPadByNote, padCollisions, DEFAULT_PAD_CHANNEL, DEFAULT_KEYS_CHANNEL,
 } from '../pads/model.js';
@@ -219,6 +222,9 @@ const metroBtn = $('[data-metro]');
 const metroDotsEl = $('[data-metro-dots]');
 const staffViewBtn = $('[data-grid-view]');
 const projectNote = $('[data-project-note]');
+const projectExportBtn = $('[data-project-export]');
+const projectImportBtn = $('[data-project-import]');
+const projectFileInput = $('[data-project-file]');
 const padsEl = $('[data-pads]');
 const gridEl = $('[data-grid]');
 const stepEditorEl = $('[data-step-editor]');
@@ -383,6 +389,70 @@ function updateProjectNote() {
     ? ` → ${project.patterns.find((p) => p.id === queuedPatternId)?.name || '?'}`
     : '';
   projectNote.textContent = `project: magicbeatz-v5 bpm ${project.bpm} · ${mode} · ${pat?.name || '?'}${queued}${imported ? ' imported from suite' : ''}`;
+}
+
+// ---------- project files (export / import) ----------
+
+/** Clear edit + playback UI that must not survive swapping the project. */
+function resetProjectUiForImport() {
+  // Stop cleanly first: transport callbacks resolve against the live project.
+  if (transport.isRunning()) onTransportStopped();
+  else cancelCountIn();
+  transport.stop();
+  playbackUiActive = false;
+  capturing = false;
+  recordBuffer = [];
+  setPlaying(false);
+  queuedPatternId = null;
+  songPlayingPatternIds = new Set();
+  renamePatternId = null;
+  trackPopoverId = null;
+  closeTrackPopover({ notify: false });
+  arrangePaint = null;
+  launchPads = false;
+  selectedCell = null;
+  takeSnapshot = null;
+  lastTake = null;
+  capturePass = 0;
+  captureNotes = 0;
+  updateUndoButton();
+}
+
+/** Download every Grid + both timelines as a JSON file. */
+function exportProjectFile() {
+  persist();
+  const name = projectFileName(project);
+  const blob = new Blob([stringifyProjectFile(project)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = name;
+  link.hidden = true;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  // Give the download a turn to start before releasing the blob URL.
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+  setGridNotice(`exported ${name}`);
+}
+
+/** Replace the open project from a user-picked JSON file. */
+async function importProjectFile(file) {
+  if (!file) return;
+  let nextProject;
+  try {
+    nextProject = parseProjectFile(await file.text());
+  } catch (err) {
+    // Validation runs before any state changes, so a bad file is harmless.
+    setGridNotice(`import failed: ${err?.message || 'unreadable file'}`, 8000);
+    return;
+  }
+  resetProjectUiForImport();
+  project = nextProject;
+  reloadArrangeSlots();
+  refreshPatternViews();
+  const { grids, bars } = summarizeProject(project);
+  setGridNotice(`imported ${grids} grid${grids === 1 ? '' : 's'} · ${bars} bars`, 6000);
 }
 
 function getBpm() { return clampBpm(parseInt(bpmInput.value, 10) || 120); }
@@ -4083,6 +4153,15 @@ document.querySelector('[data-grid-reset]').addEventListener('click', () => {
   renderSession();
   renderPads();
   updateVelocityUi();
+});
+// Whole-project export/import: all Grids + Looper + Arranger in one JSON file.
+projectExportBtn?.addEventListener('click', exportProjectFile);
+projectImportBtn?.addEventListener('click', () => projectFileInput?.click());
+projectFileInput?.addEventListener('change', async () => {
+  const [file] = projectFileInput.files || [];
+  // Reset first so picking the same file twice still fires `change`.
+  projectFileInput.value = '';
+  await importProjectFile(file);
 });
 keysCurveSel.addEventListener('change', () => {
   keysCurve = keysCurveSel.value;

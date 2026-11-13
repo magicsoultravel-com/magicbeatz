@@ -255,3 +255,11 @@ Details:
 - `magicbeatz-grid-view-v1` remembers the grid pane's view ({ mode: 'grid' | 'staff' }).
 - One-shot read-only import from legacy `guitarsuite-magicbeatz`, never
   writes back.
+- **export** downloads the open project — every Grid, the Looper timeline, all
+  eight Arranger layers, tempo/div/view — as
+  `magicbeatz-<grid>-YYYYMMDD-HHmm.json`. **import** validates the file before
+  touching state, then replaces the project and repaints grid + timeline.
+  Files carry the same `{ schemaVersion, project }` document as
+  `magicbeatz-v1`, so an export envelope, a raw storage payload, a bare v5
+  project or a legacy v1 pattern all load; an invalid file leaves the current
+  project untouched and the error shows in the grid header.
