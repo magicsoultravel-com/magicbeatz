@@ -1,22 +1,17 @@
 /**
- * Project document v5: pattern bank + whole-Grid Arranger layers.
+ * Project document v6: pattern bank + whole-Grid Arranger layers.
  *
  * A Grid (`patterns[]`) is a complete, independent multi-track pattern. The
- * Looper is one timeline lane of whole Grids; the Arranger is eight independent
- * timeline lanes, each also holding whole Grids. A lane clip stores only a
- * `patternId` — never a track or channel — so every active lane plays its entire
- * Grid, and all active layers mix together.
+ * Arranger is eight independent timeline lanes, each holding whole Grids. A
+ * lane clip stores only a `patternId` — never a track or channel — so every
+ * active lane plays its entire Grid, and all active layers mix together.
  *
- * v2 stored arrangement clips in whole bars ({startBar, lengthBars}). v3 keeps
- * the same clip shape but positions them in *slots* ({startSlot, lengthSlot})
- * so several clips can share one bar. `arrangeDiv` = slots per bar (1/2/4);
- * migration from v2 multiplies old bar positions by `arrangeDiv`, so an old
- * project plays back at exactly the same time.
- *
- * v4 bound each Arranger lane to a channel id (a per-track filter). That model
- * was rejected: v5 drops channel bindings and clears the v4 Arranger once on
- * load, because channel-filtered lane clips cannot be translated into whole-Grid
- * layers without every lane suddenly playing a full overlapping Grid.
+ * v6 keeps one timeline only: the Arranger. A slot is always one bar, so clips
+ * use {startSlot, lengthSlot} in whole bars. Older documents are migrated on
+ * load: Looper clips move into Layer 1, and sub-bar positions (v3–v5
+ * `arrangeDiv` 2/4) collapse to the first occupied sub-slot of each bar. v4
+ * channel-filtered lanes cannot be translated into whole-Grid layers and are
+ * dropped.
  */
 import {
   STORAGE_KEY,
@@ -37,22 +32,14 @@ import {
   DEFAULT_VELOCITY,
 } from './pattern.js';
 
-export const MAX_ARRANGE_BARS = 16;
-/** Fresh projects open with the full 16-bar arrangement canvas. */
-export const DEFAULT_ARRANGE_BARS = MAX_ARRANGE_BARS;
-/** Slot resolutions per bar: 1 = bar clip, 2 = half bar, 4 = beat. */
-export const ARRANGE_DIVS = [1, 2, 4];
-export const DEFAULT_ARRANGE_DIV = 4;
-export const MAX_ARRANGE_SLOTS = MAX_ARRANGE_BARS * DEFAULT_ARRANGE_DIV;
+export const MAX_ARRANGE_BARS = 64;
+/** Fresh projects open with the 16-bar arrangement canvas. */
+export const DEFAULT_ARRANGE_BARS = 16;
+/** Timeline lengths offered by the position dropdown. */
+export const ARRANGE_LENGTH_OPTIONS = [16, 32, 64];
 /** The Arranger always exposes exactly eight independent whole-Grid layers. */
 export const ARRANGER_LANES = 8;
-export const ARRANGE_VIEWS = ['looper', 'arranger'];
 const ARRANGER_LANE_IDS = Array.from({ length: ARRANGER_LANES }, (_, i) => `lane-${i + 1}`);
-
-/** Coerce any stored arrangement view. */
-export function normalizeArrangeView(value) {
-  return value === 'arranger' ? 'arranger' : 'looper';
-}
 
 /** Build the eight independent whole-Grid layer records. */
 export function createArrangerLanes() {
@@ -62,13 +49,7 @@ export function createArrangerLanes() {
   }));
 }
 
-/** Coerce any stored value to a supported slots-per-bar resolution. */
-export function normalizeArrangeDiv(value) {
-  const n = parseInt(value, 10);
-  return ARRANGE_DIVS.includes(n) ? n : DEFAULT_ARRANGE_DIV;
-}
-
-/** Coerce any stored arrangement length (in bars) to a supported value. */
+/** Clamp any stored arrangement length (in bars) to the supported canvas range. */
 export function normalizeArrangeBars(value, fallback = DEFAULT_ARRANGE_BARS) {
   const n = parseInt(value, 10);
   const bars = Number.isFinite(n) ? n : fallback;
@@ -80,58 +61,43 @@ function slotInt(value, fallback = 0) {
   return Number.isFinite(n) ? Math.max(0, n) : fallback;
 }
 
-/** Start slot of a clip, accepting legacy bar positions. */
-export function clipStartSlot(clip, div = DEFAULT_ARRANGE_DIV) {
+/** Start bar of a clip, accepting legacy bar positions. */
+export function clipStartSlot(clip) {
   if (clip?.startSlot != null) return slotInt(clip.startSlot);
-  return slotInt(clip?.startBar) * normalizeArrangeDiv(div);
+  return slotInt(clip?.startBar);
 }
 
-/** Length in slots of a clip, accepting legacy bar lengths. */
-export function clipLengthSlot(clip, div = DEFAULT_ARRANGE_DIV) {
-  const max = MAX_ARRANGE_SLOTS;
-  if (clip?.lengthSlot != null) return Math.min(max, Math.max(1, slotInt(clip.lengthSlot, 1)));
-  return Math.min(max, Math.max(1, slotInt(clip?.lengthBars, 1))) * normalizeArrangeDiv(div);
+/** Length in bars of a clip, accepting legacy bar lengths. */
+export function clipLengthSlot(clip) {
+  if (clip?.lengthSlot != null) return Math.min(MAX_ARRANGE_BARS, Math.max(1, slotInt(clip.lengthSlot, 1)));
+  return Math.min(MAX_ARRANGE_BARS, Math.max(1, slotInt(clip?.lengthBars, 1)));
 }
 
-/** Normalise a clip to slot fields (migrates bar-based clips on the way in). */
-export function createArrangementClip(partial = {}, div = DEFAULT_ARRANGE_DIV) {
+/** Normalise a clip to whole-bar slot fields. */
+export function createArrangementClip(partial = {}) {
   return {
     id: partial.id || nextClipId(),
     patternId: partial.patternId,
-    startSlot: clipStartSlot(partial, div),
-    lengthSlot: clipLengthSlot(partial, div),
+    startSlot: Math.min(MAX_ARRANGE_BARS - 1, clipStartSlot(partial)),
+    lengthSlot: clipLengthSlot(partial),
   };
 }
 
-/** Total arrangement length in slots. */
-export function arrangementLengthSlots(arrangement, div = DEFAULT_ARRANGE_DIV) {
+/** Total arrangement length in bars. */
+export function arrangementLengthSlots(arrangement) {
   if (!arrangement?.length) return 0;
   return arrangement.reduce(
-    (max, clip) => Math.max(max, clipStartSlot(clip, div) + clipLengthSlot(clip, div)),
+    (max, clip) => Math.max(max, clipStartSlot(clip) + clipLengthSlot(clip)),
     0,
   );
 }
 
-/** Total arrangement length in bars (rounded up when clips end mid-bar). */
-export function arrangementLengthBars(arrangement, div = DEFAULT_ARRANGE_DIV) {
-  const d = normalizeArrangeDiv(div);
-  return Math.ceil(arrangementLengthSlots(arrangement, d) / d);
-}
-
-/** Longest end slot across all Arranger lanes. */
-export function arrangerLengthSlots(arranger, div = DEFAULT_ARRANGE_DIV) {
+/** Longest end bar across all Arranger lanes. */
+export function arrangerLengthSlots(arranger) {
   const lanes = Array.isArray(arranger?.lanes) ? arranger.lanes : [];
   return lanes.reduce(
-    (max, lane) => Math.max(max, arrangementLengthSlots(lane?.arrangement, div)),
+    (max, lane) => Math.max(max, arrangementLengthSlots(lane?.arrangement)),
     0,
-  );
-}
-
-/** Longest end slot across Looper and every Arranger lane. */
-export function projectArrangementLengthSlots(project, div = DEFAULT_ARRANGE_DIV) {
-  return Math.max(
-    arrangementLengthSlots(project?.arrangement, div),
-    arrangerLengthSlots(project?.arranger, div),
   );
 }
 
@@ -139,26 +105,42 @@ export function projectArrangementLengthSlots(project, div = DEFAULT_ARRANGE_DIV
  * Arrangement canvas length in bars.
  *
  * `arrangeBars` is the explicit timeline length. Legacy projects without it
- * migrate to the full 16-bar canvas, while clips that extend past the stored
+ * migrate to the 16-bar canvas, while clips that extend past the stored
  * length still expand it so no painted music is truncated.
  */
 export function arrangementBars(project) {
-  const div = normalizeArrangeDiv(project?.arrangeDiv);
-  const clipBars = Math.ceil(projectArrangementLengthSlots(project, div) / div) || 0;
+  const clipBars = arrangerLengthSlots(project?.arranger) || 0;
   const stored = parseInt(project?.arrangeBars, 10);
   const fallback = Number.isFinite(stored) ? stored : DEFAULT_ARRANGE_BARS;
   return normalizeArrangeBars(Math.max(fallback, clipBars));
 }
 
-/** Flatten clips → one patternId (or '') per arrangement slot. */
-export function arrangementToSlots(arrangement, length, div = DEFAULT_ARRANGE_DIV) {
-  const d = normalizeArrangeDiv(div);
-  const len = Math.max(1, length || arrangementLengthSlots(arrangement, d) || 1);
+const LEGACY_ARRANGE_DIVS = [1, 2, 4];
+
+function legacyArrangeDiv(value) {
+  const n = parseInt(value, 10);
+  return LEGACY_ARRANGE_DIVS.includes(n) ? n : 4;
+}
+
+/** Flatten clips → one patternId (or '') per sub-bar slot. */
+function slotsFromArrangement(arrangement, length, div) {
+  const d = Math.max(1, parseInt(div, 10) || 1);
+  const clips = Array.isArray(arrangement) ? arrangement : [];
+  const clipEnd = clips.reduce((max, clip) => {
+    const start = clip?.startSlot != null ? slotInt(clip.startSlot) : slotInt(clip.startBar) * d;
+    const count = clip?.lengthSlot != null
+      ? Math.max(1, slotInt(clip.lengthSlot, 1))
+      : Math.max(1, slotInt(clip.lengthBars, 1)) * d;
+    return Math.max(max, start + count);
+  }, 0);
+  const len = Math.max(1, length || clipEnd || 1);
   const slots = Array.from({ length: len }, () => '');
-  for (const clip of arrangement || []) {
+  for (const clip of clips) {
     if (!clip?.patternId) continue;
-    const start = clipStartSlot(clip, d);
-    const count = clipLengthSlot(clip, d);
+    const start = clip?.startSlot != null ? slotInt(clip.startSlot) : slotInt(clip.startBar) * d;
+    const count = clip?.lengthSlot != null
+      ? Math.max(1, slotInt(clip.lengthSlot, 1))
+      : Math.max(1, slotInt(clip.lengthBars, 1)) * d;
     for (let k = 0; k < count; k += 1) {
       const i = start + k;
       if (i >= 0 && i < len) slots[i] = clip.patternId;
@@ -167,9 +149,13 @@ export function arrangementToSlots(arrangement, length, div = DEFAULT_ARRANGE_DI
   return slots;
 }
 
+/** Flatten clips → one patternId (or '') per bar. */
+export function arrangementToSlots(arrangement, length) {
+  return slotsFromArrangement(arrangement, length, 1);
+}
+
 /** Merge contiguous identical pattern ids into arrangement clips. */
-export function slotsToArrangement(slots, div = DEFAULT_ARRANGE_DIV) {
-  const d = normalizeArrangeDiv(div);
+export function slotsToArrangement(slots) {
   const clips = [];
   let i = 0;
   while (i < slots.length) {
@@ -184,68 +170,83 @@ export function slotsToArrangement(slots, div = DEFAULT_ARRANGE_DIV) {
       patternId: id,
       startSlot: i,
       lengthSlot: len,
-    }, d));
+    }));
     i += len;
   }
   return clips;
 }
 
 /**
- * Re-grid slots when the slots-per-bar resolution changes.
- * Finer grids duplicate the source slot; coarser grids keep the first
- * sub-slot of each group. Length is clamped to MAX_ARRANGE_BARS bars.
+ * Convert a legacy clip list to whole-bar slots.
+ *
+ * Sub-bar positions collapse by taking the first occupied sub-slot of each bar,
+ * so no bar that had music is lost when 2/4-slots-per-bar projects migrate to
+ * the v6 one-slot-per-bar timeline.
  */
-export function resampleSlots(slots, fromDiv, toDiv, maxBars = MAX_ARRANGE_BARS) {
-  const from = normalizeArrangeDiv(fromDiv);
-  const to = normalizeArrangeDiv(toDiv);
-  const src = Array.isArray(slots) ? slots : [];
-  if (from === to) return src.slice();
-  const factor = to / from;
-  const targetLen = Math.max(
-    to,
-    Math.min(maxBars * to, Math.round((src.length || from) * factor)),
-  );
-  const out = [];
-  for (let i = 0; i < targetLen; i += 1) {
-    const idx = to >= from ? Math.floor(i / factor) : i * (from / to);
-    out.push(src[idx] || '');
+export function legacyClipsToBarSlots(clips, div = 4) {
+  const d = legacyArrangeDiv(div);
+  const source = Array.isArray(clips) ? clips : [];
+  const sub = Array.from({ length: MAX_ARRANGE_BARS * d }, () => '');
+  for (const clip of source) {
+    if (!clip?.patternId) continue;
+    const start = clip?.startSlot != null ? slotInt(clip.startSlot) : slotInt(clip.startBar) * d;
+    const count = clip?.lengthSlot != null
+      ? Math.max(1, slotInt(clip.lengthSlot, 1))
+      : Math.max(1, slotInt(clip.lengthBars, 1)) * d;
+    for (let k = 0; k < count; k += 1) {
+      const i = start + k;
+      if (i >= 0 && i < sub.length) sub[i] = clip.patternId;
+    }
   }
-  return out;
+
+  const bars = [];
+  for (let bar = 0; bar < MAX_ARRANGE_BARS; bar += 1) {
+    let id = '';
+    for (let k = 0; k < d; k += 1) {
+      const value = sub[bar * d + k];
+      if (value) {
+        id = value;
+        break;
+      }
+    }
+    bars.push(id);
+  }
+  while (bars.length && !bars[bars.length - 1]) bars.pop();
+  return bars;
 }
 
 /**
  * Convert lane clip arrays to editable slot arrays.
  * Lane ids are preserved; clips stay whole-Grid references.
  */
-export function arrangerLanesToSlots(arranger, length, div = DEFAULT_ARRANGE_DIV) {
+export function arrangerLanesToSlots(arranger, length) {
   const lanes = Array.isArray(arranger?.lanes) ? arranger.lanes : [];
   return Array.from({ length: ARRANGER_LANES }, (_, index) => {
     const lane = lanes[index] || {};
     return {
       id: lane.id || ARRANGER_LANE_IDS[index],
-      slots: arrangementToSlots(lane.arrangement, length, div),
+      slots: arrangementToSlots(lane.arrangement, length),
     };
   });
 }
 
 /** Regenerate lane clip arrays from editable slot arrays. */
-export function arrangerSlotsToLanes(lanes, div = DEFAULT_ARRANGE_DIV) {
+export function arrangerSlotsToLanes(lanes) {
   const source = Array.isArray(lanes) ? lanes : [];
   return {
     lanes: Array.from({ length: ARRANGER_LANES }, (_, index) => {
       const lane = source[index] || {};
       return {
         id: lane.id || ARRANGER_LANE_IDS[index],
-        arrangement: slotsToArrangement(Array.isArray(lane.slots) ? lane.slots : [], div),
+        arrangement: slotsToArrangement(Array.isArray(lane.slots) ? lane.slots : []),
       };
     }),
   };
 }
 
 /** Parse stored layer records, preserving lane ids and dropping stale clips. */
-export function normalizeArrangerLanes(raw, patterns = [], div = DEFAULT_ARRANGE_DIV) {
+export function normalizeArrangerLanes(raw, patterns = []) {
   const source = Array.isArray(raw?.lanes) ? raw.lanes : [];
-  const d = normalizeArrangeDiv(div);
   return {
     lanes: Array.from({ length: ARRANGER_LANES }, (_, index) => {
       const lane = source[index] || {};
@@ -254,68 +255,11 @@ export function normalizeArrangerLanes(raw, patterns = [], div = DEFAULT_ARRANGE
         id: lane.id || ARRANGER_LANE_IDS[index],
         arrangement: arrangement
           .filter((c) => patterns.some((p) => p.id === c.patternId))
-          .filter((c) => clipStartSlot(c, d) < MAX_ARRANGE_SLOTS)
-          .map((c) => createArrangementClip(c, d)),
+          .filter((c) => clipStartSlot(c) < MAX_ARRANGE_BARS)
+          .map((c) => createArrangementClip(c)),
       };
     }),
   };
-}
-/** Expand to at least N bars while preserving stored slot length. */
-export function ensureArrangementSlots(project, minBars = 1) {
-  const d = normalizeArrangeDiv(project.arrangeDiv);
-  const bars = Math.max(arrangementBars(project), normalizeArrangeBars(minBars, 1));
-  const currentLen = bars * d;
-  const slots = arrangementToSlots(project.arrangement, currentLen, d);
-  project.arrangeDiv = d;
-  project.arrangeBars = bars;
-  project.arrangement = slotsToArrangement(slots, d);
-  return slots;
-}
-
-/**
- * Resolve global step → active pattern + local step (Song mode).
- * @param {object} project
- * @param {number} globalStep
- * @param {number} [totalSlotsOverride] prefer slot count when trailing rests exist
- * @returns {{ pattern: object, localStep: number, clip: object, globalBar: number,
- *   slotIndex: number, stepInSlot: number, globalStep: number } | null}
- */
-export function resolveArrangementStep(project, globalStep, totalSlotsOverride) {
-  const beats = beatsFromTimeSignature(project.timeSignature);
-  const div = normalizeArrangeDiv(project.arrangeDiv);
-  const barSteps = stepsPerBar(beats);
-  const slotSteps = Math.max(1, Math.round(barSteps / div));
-  const totalSlots = Math.max(
-    1,
-    totalSlotsOverride || 0,
-    arrangementLengthSlots(project.arrangement, div),
-  );
-  const totalStepsCount = totalSlots * slotSteps;
-  if (totalStepsCount <= 0) return null;
-
-  const step = ((globalStep % totalStepsCount) + totalStepsCount) % totalStepsCount;
-  const slotIndex = Math.floor(step / slotSteps);
-  const stepInSlot = step % slotSteps;
-  const globalBar = Math.floor(step / barSteps);
-
-  const clip = [...project.arrangement]
-    .sort((a, b) => clipStartSlot(a, div) - clipStartSlot(b, div))
-    .find((c) => {
-      const start = clipStartSlot(c, div);
-      return slotIndex >= start && slotIndex < start + clipLengthSlot(c, div);
-    });
-
-  if (!clip) return null;
-  const pattern = project.patterns.find((p) => p.id === clip.patternId);
-  if (!pattern) return null;
-
-  // Local step is relative to the clip start, then wrapped by the pattern
-  // length so a 1-bar clip can repeat inside a longer arrangement clip.
-  const clipStartStep = clipStartSlot(clip, div) * slotSteps;
-  const patternSteps = Math.max(1, (pattern.bars || 1) * barSteps);
-  const localStep = ((step - clipStartStep) % patternSteps + patternSteps) % patternSteps;
-
-  return { pattern, localStep, clip, globalBar, slotIndex, stepInSlot, globalStep: step };
 }
 
 export function getActivePattern(project) {
@@ -328,42 +272,44 @@ export function getActivePattern(project) {
  * Every layer owns its own clip sequence and local step, and resolves a whole
  * Grid (`pattern`) rather than a single channel. Layers are independent: the
  * same Grid may sound on several layers at once, and nothing is deduplicated.
+ * A timeline slot is always one bar.
+ *
+ * @param {object} project
+ * @param {number} globalStep
+ * @param {number} [totalBarsOverride] prefer canvas length when trailing rests exist
  */
-export function resolveArrangerStep(project, globalStep, totalSlotsOverride) {
+export function resolveArrangerStep(project, globalStep, totalBarsOverride) {
   const beats = beatsFromTimeSignature(project.timeSignature);
-  const div = normalizeArrangeDiv(project.arrangeDiv);
   const barSteps = stepsPerBar(beats);
-  const slotSteps = Math.max(1, Math.round(barSteps / div));
-  const totalSlots = Math.max(
+  const totalBars = Math.max(
     1,
-    totalSlotsOverride || 0,
-    arrangementLengthSlots(project?.arrangement, div),
-    arrangerLengthSlots(project?.arranger, div),
+    totalBarsOverride || 0,
+    arrangerLengthSlots(project?.arranger),
   );
-  const totalStepsCount = totalSlots * slotSteps;
+  const totalStepsCount = totalBars * barSteps;
   if (totalStepsCount <= 0) return Array(ARRANGER_LANES).fill(null);
 
   const step = ((globalStep % totalStepsCount) + totalStepsCount) % totalStepsCount;
-  const slotIndex = Math.floor(step / slotSteps);
-  const stepInSlot = step % slotSteps;
-  const globalBar = Math.floor(step / barSteps);
+  const slotIndex = Math.floor(step / barSteps);
+  const stepInSlot = step % barSteps;
+  const globalBar = slotIndex;
   const lanes = Array.isArray(project?.arranger?.lanes) ? project.arranger.lanes : [];
 
   return Array.from({ length: ARRANGER_LANES }, (_, laneIndex) => {
     const lane = lanes[laneIndex];
     if (!lane) return null;
     const clip = [...(lane.arrangement || [])]
-      .sort((a, b) => clipStartSlot(a, div) - clipStartSlot(b, div))
+      .sort((a, b) => clipStartSlot(a) - clipStartSlot(b))
       .find((c) => {
-        const start = clipStartSlot(c, div);
-        return slotIndex >= start && slotIndex < start + clipLengthSlot(c, div);
+        const start = clipStartSlot(c);
+        return slotIndex >= start && slotIndex < start + clipLengthSlot(c);
       });
     if (!clip) return null;
 
     const pattern = project.patterns.find((p) => p.id === clip.patternId);
     if (!pattern) return null;
 
-    const clipStartStep = clipStartSlot(clip, div) * slotSteps;
+    const clipStartStep = clipStartSlot(clip) * barSteps;
     const patternSteps = Math.max(1, (pattern.bars || 1) * barSteps);
     const localStep = ((step - clipStartStep) % patternSteps + patternSteps) % patternSteps;
 
@@ -503,26 +449,23 @@ export function createDefaultProject() {
   const patterns = buildPresetPatterns(timeSignature);
   // The first preset is the eight-track starter so a fresh project opens editable.
   const active = patterns[0];
-  const arrangeDiv = DEFAULT_ARRANGE_DIV;
+  const lanes = createArrangerLanes();
+  // Layer 1 starts with the active Grid in bar 1; layers 2–8 stay empty.
+  lanes[0].arrangement = [
+    createArrangementClip({
+      patternId: active.id,
+      startSlot: 0,
+      lengthSlot: active.bars,
+    }),
+  ];
   return {
-    version: 5,
+    version: 6,
     bpm: 120,
     timeSignature,
     swing: 0,
     patterns,
     activePatternId: active.id,
-    arrangement: [
-      createArrangementClip({
-        patternId: active.id,
-        startSlot: 0,
-        lengthSlot: active.bars * arrangeDiv,
-      }, arrangeDiv),
-    ],
-    arranger: {
-      lanes: createArrangerLanes(),
-    },
-    arrangeView: 'looper',
-    arrangeDiv,
+    arranger: { lanes },
     arrangeBars: DEFAULT_ARRANGE_BARS,
     arrangeLoop: true,
     playMode: 'pattern', // 'pattern' | 'song'
@@ -530,9 +473,9 @@ export function createDefaultProject() {
 }
 
 export function serializeProject(project) {
-  const arranger = normalizeArrangerLanes(project.arranger, project.patterns, project.arrangeDiv);
+  const arranger = normalizeArrangerLanes(project.arranger, project.patterns);
   return {
-    version: 5,
+    version: 6,
     bpm: project.bpm,
     timeSignature: project.timeSignature,
     swing: project.swing,
@@ -543,12 +486,6 @@ export function serializeProject(project) {
       channels: p.channels.map(serializeChannel),
     })),
     activePatternId: project.activePatternId,
-    arrangement: project.arrangement.map((c) => ({
-      id: c.id,
-      patternId: c.patternId,
-      startSlot: c.startSlot,
-      lengthSlot: c.lengthSlot,
-    })),
     arranger: {
       lanes: arranger.lanes.map((lane) => ({
         id: lane.id,
@@ -560,8 +497,6 @@ export function serializeProject(project) {
         })),
       })),
     },
-    arrangeView: normalizeArrangeView(project.arrangeView),
-    arrangeDiv: normalizeArrangeDiv(project.arrangeDiv),
     arrangeBars: arrangementBars(project),
     arrangeLoop: !!project.arrangeLoop,
     playMode: project.playMode === 'song' ? 'song' : 'pattern',
@@ -577,26 +512,22 @@ export function migrateV1ToProject(raw) {
     bars: legacy.bars,
     channels: legacy.channels,
   }, legacy.timeSignature);
-  const arrangeDiv = DEFAULT_ARRANGE_DIV;
+  const lanes = createArrangerLanes();
+  lanes[0].arrangement = [
+    createArrangementClip({
+      patternId: pattern.id,
+      startSlot: 0,
+      lengthSlot: pattern.bars,
+    }),
+  ];
   return {
-    version: 5,
+    version: 6,
     bpm: legacy.bpm,
     timeSignature: legacy.timeSignature,
     swing: legacy.swing,
     patterns: [pattern],
     activePatternId: pattern.id,
-    arrangement: [
-      createArrangementClip({
-        patternId: pattern.id,
-        startSlot: 0,
-        lengthSlot: pattern.bars * arrangeDiv,
-      }, arrangeDiv),
-    ],
-    arranger: {
-      lanes: createArrangerLanes(),
-    },
-    arrangeView: 'looper',
-    arrangeDiv,
+    arranger: { lanes },
     arrangeBars: DEFAULT_ARRANGE_BARS,
     arrangeLoop: true,
     playMode: 'pattern',
@@ -606,7 +537,7 @@ export function migrateV1ToProject(raw) {
 export function parseProject(raw) {
   if (!raw || typeof raw !== 'object') return createDefaultProject();
 
-  if (raw.version !== 2 && raw.version !== 3 && raw.version !== 4 && raw.version !== 5
+  if (![2, 3, 4, 5, 6].includes(parseInt(raw.version, 10))
     && Array.isArray(raw.channels) && !Array.isArray(raw.patterns)) {
     return migrateV1ToProject(raw);
   }
@@ -622,9 +553,9 @@ export function parseProject(raw) {
     ];
   }
 
-  // Slots-per-bar resolution. v2 projects have no field → 4, and their
-  // bar-based clips are multiplied by 4 on the way in (same wall-clock time).
-  const arrangeDiv = normalizeArrangeDiv(raw.arrangeDiv);
+  // v6 stores whole bars. Older documents store sub-bar slots, so their clips
+  // are converted to bars on the way in (v2 bar clips and v3–v5 `arrangeDiv`).
+  const sourceDiv = version >= 6 ? 1 : legacyArrangeDiv(raw.arrangeDiv);
 
   let patterns = Array.isArray(raw.patterns) && raw.patterns.length
     ? raw.patterns.map((p) => parsePatternChannels(p, timeSignature))
@@ -639,59 +570,61 @@ export function parseProject(raw) {
     activePatternId = patterns[0].id;
   }
 
+  const hasPattern = (clip) => patterns.some((p) => p.id === clip?.patternId);
   const rawArrangement = Array.isArray(raw.arrangement) ? raw.arrangement : null;
-  let arrangement = rawArrangement
-    ? rawArrangement
-      .filter((c) => patterns.some((p) => p.id === c.patternId))
-      .filter((c) => clipStartSlot(c, arrangeDiv) < MAX_ARRANGE_SLOTS)
-      .map((c) => createArrangementClip(c, arrangeDiv))
-    : [createArrangementClip({
-      patternId: activePatternId,
-      startSlot: 0,
-      lengthSlot: (patterns.find((p) => p.id === activePatternId)?.bars || 1) * arrangeDiv,
-    }, arrangeDiv)];
+  const sourceArranger = raw.arranger && typeof raw.arranger === 'object' ? raw.arranger : null;
+  const sourceLanes = Array.isArray(sourceArranger?.lanes) ? sourceArranger.lanes : [];
 
-  // v3 keeps an explicitly cleared timeline empty; older documents without an
-  // arrangement field always get a starter clip.
-  if (!arrangement.length && !rawArrangement) {
-    arrangement = [createArrangementClip({
-      patternId: activePatternId,
-      startSlot: 0,
-      lengthSlot: arrangeDiv,
-    }, arrangeDiv)];
+  // Start from the stored Arranger layers (v5+). v4 channel-filtered lanes are
+  // dropped because they cannot be translated into whole-Grid layers.
+  const laneSlots = Array.from({ length: ARRANGER_LANES }, () => []);
+  if (version >= 5) {
+    for (let i = 0; i < ARRANGER_LANES; i += 1) {
+      const clips = Array.isArray(sourceLanes[i]?.arrangement)
+        ? sourceLanes[i].arrangement.filter(hasPattern)
+        : [];
+      laneSlots[i] = legacyClipsToBarSlots(clips, sourceDiv);
+    }
   }
 
-  // Arranger layers are always exactly eight independent whole-Grid records.
-  // v5 preserves them (and the active view) exactly. v4 lane clips were
-  // authored under the rejected per-track filter model and cannot be translated
-  // into whole-Grid layers, so they are cleared once and the project opens on
-  // the (untouched) Looper. v2/v3 seed eight empty layers.
-  const sourceArranger = raw.arranger && typeof raw.arranger === 'object' ? raw.arranger : null;
-  const arranger = version >= 5 && sourceArranger
-    ? normalizeArrangerLanes(sourceArranger, patterns, arrangeDiv)
-    : { lanes: createArrangerLanes() };
-  const arrangeView = version >= 5 ? normalizeArrangeView(raw.arrangeView) : 'looper';
+  // The old single Looper timeline becomes Layer 1. Existing layer clips win
+  // where they overlap so no Arranger content is overwritten.
+  if (rawArrangement) {
+    const looperSlots = legacyClipsToBarSlots(rawArrangement.filter(hasPattern), sourceDiv);
+    for (let i = 0; i < looperSlots.length; i += 1) {
+      if (!laneSlots[0][i]) laneSlots[0][i] = looperSlots[i];
+    }
+  }
 
-  // Migration: legacy documents open on the full 16-bar canvas. Explicit
-  // lengths are preserved, and clips beyond the stored end expand it.
+  // Documents without any timeline field always get a starter clip. Explicitly
+  // cleared timelines (present but empty) stay empty.
+  if (!rawArrangement && !sourceArranger) {
+    const activeBars = patterns.find((p) => p.id === activePatternId)?.bars || 1;
+    for (let i = 0; i < activeBars; i += 1) laneSlots[0][i] = activePatternId;
+  }
+
+  const lanes = createArrangerLanes();
+  lanes.forEach((lane, index) => {
+    lane.arrangement = slotsToArrangement(laneSlots[index]);
+    if (sourceLanes[index]?.id) lane.id = sourceLanes[index].id;
+  });
+  const arranger = { lanes };
+
+  // Migration: legacy documents open on the 16-bar canvas. Explicit lengths are
+  // preserved, and clips beyond the stored end expand it.
   const arrangeBars = arrangementBars({
-    arrangeDiv,
     arrangeBars: raw.arrangeBars,
-    arrangement,
     arranger,
   });
 
   return {
-    version: 5,
+    version: 6,
     bpm,
     timeSignature,
     swing,
     patterns,
     activePatternId,
-    arrangement,
     arranger,
-    arrangeView,
-    arrangeDiv,
     arrangeBars,
     arrangeLoop: raw.arrangeLoop !== false,
     playMode: raw.playMode === 'song' ? 'song' : 'pattern',
@@ -729,22 +662,4 @@ export function duplicatePattern(pattern, name) {
     }),
   });
   return copy;
-}
-
-export function appendArrangementClip(project, patternId) {
-  const pattern = project.patterns.find((p) => p.id === patternId);
-  if (!pattern) return null;
-  const div = normalizeArrangeDiv(project.arrangeDiv);
-  const start = Math.min(
-    MAX_ARRANGE_SLOTS - 1,
-    arrangementLengthSlots(project.arrangement, div),
-  );
-  const clip = createArrangementClip({
-    patternId,
-    startSlot: start,
-    lengthSlot: Math.min(MAX_ARRANGE_SLOTS - start, pattern.bars * div),
-  }, div);
-  project.arrangement.push(clip);
-  project.arrangeBars = arrangementBars(project);
-  return clip;
 }

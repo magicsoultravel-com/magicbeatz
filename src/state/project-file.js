@@ -6,7 +6,7 @@
  * `localStorage['magicbeatz-v1']`, so an exported file can be restored
  * verbatim. `kind` + `app` make it recognisable in a folder of random JSON,
  * and import stays tolerant: it also accepts a bare serialized project
- * (v2–v5, `patterns[]`), a legacy v1 pattern document (`channels[]`) or a raw
+ * (v2–v6, `patterns[]`), a legacy v1 pattern document (`channels[]`) or a raw
  * storage envelope. All schema migration/clamping is delegated to
  * `parseProject()`, so every historical version imports through the same path.
  *

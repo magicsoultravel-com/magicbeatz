@@ -204,8 +204,8 @@
             </span>
             <span class="mbz-session-spacer"></span>
             <div class="mbz-mode-toggle" role="group" aria-label="Play mode">
-              <button type="button" class="mbz-btn" data-mode-live title="Live looper — clips queue at bar boundaries">Live</button>
-              <button type="button" class="mbz-btn" data-mode-song title="Song mode — follows the full 16-bar arrangement">Song</button>
+              <button type="button" class="mbz-btn" data-mode-live title="Live mode — clips queue at bar boundaries">Live</button>
+              <button type="button" class="mbz-btn" data-mode-song title="Song mode — follows the whole arrangement timeline">Song</button>
             </div>
           </div>
 
@@ -238,7 +238,7 @@
                 <button type="button" class="mbz-btn" data-grid-tidy title="Remove pitch rows that hold no steps">tidy</button>
                 <button type="button" class="mbz-btn" data-grid-undo disabled title="Roll back the last take">undo take</button>
                 <button type="button" class="mbz-btn" data-grid-reset>factory</button>
-                <button type="button" class="mbz-btn" data-project-export title="Download every Grid and both timelines as a JSON file">export</button>
+                <button type="button" class="mbz-btn" data-project-export title="Download every Grid and the Arranger timeline as a JSON file">export</button>
                 <button type="button" class="mbz-btn" data-project-import title="Replace this project from a magicbeatz JSON file">import</button>
                 <input type="file" accept=".json,application/json" data-project-file hidden>
                 <span class="mbz-session-spacer"></span>
@@ -257,31 +257,27 @@
           <div class="mbz-arrange" aria-label="Arrangement timeline">
             <div class="mbz-arrange-head">
               <span>timeline <span class="mbz-hint" data-arrange-len>16 bars</span></span>
-              <div class="mbz-mode-toggle" role="group" aria-label="Timeline view">
-                <button type="button" class="mbz-btn is-active" data-arrange-view="looper" title="Looper — one clip lane across the timeline">Looper</button>
-                <button type="button" class="mbz-btn" data-arrange-view="arranger" title="Arranger — eight independent Grid layers">Arranger</button>
-              </div>
               <span class="mbz-arrange-paint" data-arrange-paint>paint: —</span>
-              <span class="mbz-arrange-pos" data-arrange-pos>bar — / 16</span>
+              <span class="mbz-arrange-len">
+                <button type="button" class="mbz-arrange-pos" data-arrange-pos aria-haspopup="menu" aria-expanded="false" title="Timeline length — 16, 32 or 64 bars">bar — / 16</button>
+                <span class="mbz-arrange-len-menu" data-arrange-len-menu role="menu" aria-label="Timeline length" hidden>
+                  <button type="button" class="mbz-btn is-active" role="menuitemradio" aria-checked="true" data-arrange-bars="16">16 bars</button>
+                  <button type="button" class="mbz-btn" role="menuitemradio" aria-checked="false" data-arrange-bars="32">32 bars</button>
+                  <button type="button" class="mbz-btn" role="menuitemradio" aria-checked="false" data-arrange-bars="64">64 bars</button>
+                </span>
+              </span>
               <span class="mbz-session-spacer"></span>
-              <label class="mbz-arrange-loop" title="How many arrangement slots fit in one bar">slots
-                <select data-arrange-div>
-                  <option value="1">1 / bar</option>
-                  <option value="2">2 / bar</option>
-                  <option value="4" selected>4 / bar</option>
-                </select>
-              </label>
-              <label class="mbz-arrange-loop"><input type="checkbox" data-arrange-loop checked> loop</label>
+              <label class="mbz-arrange-loop" title="Loop the timeline when it reaches the last bar"><input type="checkbox" data-arrange-loop checked> loop</label>
               <button type="button" class="mbz-btn" data-arrange-add title="Add a bar">+bar</button>
               <button type="button" class="mbz-btn" data-arrange-del title="Remove the last bar">−bar</button>
-              <button type="button" class="mbz-btn" data-arrange-clear title="Clear every arrangement slot">clear</button>
+              <button type="button" class="mbz-btn" data-arrange-clear title="Clear every layer">clear</button>
             </div>
             <div class="mbz-arrange-scroll">
               <div class="mbz-arrange-ruler" data-arrange-ruler aria-hidden="true"></div>
               <div class="mbz-arrange-grid" data-arrange role="grid" aria-label="Arrangement slots"></div>
             </div>
           </div>
-          <p class="mbz-note">paint: click or drag slots with the selected clip · click a filled slot = rest · Looper keeps one clip lane · Arranger layers play whole Grids side-by-side · song mode follows all 16 bars<span data-launch-hint></span></p>
+          <p class="mbz-note">paint: click or drag bars with the selected clip · click a filled bar = rest · eight layers play whole Grids side-by-side · song mode follows the whole timeline<span data-launch-hint></span></p>
         </div>
       </section>
       <section class="mbz-row mbz-row--map" aria-label="Pad mapping">

@@ -36,7 +36,7 @@ modules, so any static server works too.
 - `src/sequencer/staff.js` → staff-view grouping + notation layout (pure)
 - `src/audio/metronome.js` → the click voice (osc blip on the master bus)
 - `src/state/` → store (isolated keys) + settings (knob CCs, octaves)
-- `tests/arrangement.test.mjs` → 16-bar Looper timeline, migration and song-resolution tests
+- `tests/arrangement.test.mjs` → one-bar-slot timeline, length, migration and song-resolution tests
 - `tests/arranger.test.mjs` → whole-Grid Arranger layers, layering, migration and serialization tests
 - `tests/perform.test.mjs` → repeat/arp rates, arp ordering, pref normalization, step-gate fit tests
 - `tests/sampler-step.test.mjs` → gated sample step events (duration/release/unique stopId)
@@ -191,48 +191,51 @@ Details:
 
 ## Arrangement timeline
 
-- The arrangement canvas is **16 bars** long. Fresh and reset projects open
-  with the starter clip in bar 1 and the remaining bars empty (rests).
-- A **Looper / Arranger** toggle switches between two independent timelines on
-  the same canvas. The active view, both timelines, the eight Arranger layers
-  and the arrangement length are stored in the project under `magicbeatz-v1`.
-- A **Grid** is a complete multi-track pattern. **Looper** is one timeline lane
-  of whole Grids. **Arranger** is eight independent timeline lanes, where every
-  lane is a whole-Grid layer: a lane clip stores only a `patternId` and never a
-  track or channel.
-- Any Grid can go into any layer, and the same Grid can occupy several layers.
-  Every active layer plays its entire Grid, so grids run side-by-side and
+- There is **one timeline: the Arranger**. A timeline slot is always **one bar**;
+  there is no Looper view and no slots-per-bar control.
+- Fresh and reset projects open on a **16-bar** canvas with the starter Grid in
+  bar 1 and bars 2–16 empty (rests). The position display opens a length menu
+  for **16 / 32 / 64 bars**, and `+bar` / `−bar` grow or trim by one bar. The
+  canvas refuses to shrink below the last painted bar, so length changes never
+  truncate music. The length and every layer are stored under `magicbeatz-v1`.
+- The **Arranger has eight independent lanes**. Every lane is a whole-Grid
+  layer: a lane clip stores only a `patternId` and never a track or channel.
+  Any Grid can go into any layer, and the same Grid can occupy several layers.
+- Every active layer plays its entire Grid, so grids run side-by-side and
   nothing is deduplicated — two layers that both contain a kick play both kicks.
 - Editing, renaming, reordering, adding or deleting tracks inside a Grid changes
   that whole Grid everywhere it is used, and never a lane. There is no
   "missing track" state: lanes only ever reference Grids.
-- Use **slots** to choose the painting resolution: `1 / bar` paints whole bars,
-  `2 / bar` half bars, and `4 / bar` beats. Changing resolution keeps the same
-  clip positions and always preserves the 16-bar canvas.
-- **Click or drag** timeline slots to paint the selected Grid. Clicking a slot
-  that already contains that Grid clears it to a rest. In Arranger, drag
-  painting stays inside the layer where the drag started, while any layer slot
-  can be clicked or painted into.
+- **Click or drag** bars to paint the selected Grid. Clicking a bar that
+  already contains that Grid clears it to a rest. Drag painting stays inside
+  the layer where the drag started.
+- Columns stay at a fixed width: **16 bars fit the visible lane**, and 32/64-bar
+  canvases scroll horizontally instead of squeezing tiles. The bar ruler and
+  sticky layer labels scroll with the grid.
 - **Live** loops the selected edit clip and queues clicked clips at the next
-  bar boundary. **Song** follows the full 16-bar timeline, including empty
-  bars. The timeline playhead advances on every 16th-note step (four steps
-  per slot at `4 / bar`) and follows the shared canvas.
-- In Arranger Song mode, all eight layers resolve independently and mix: one
-  layer can play a Grid while another layer plays a different Grid. Mute and
-  solo stay scoped inside each Grid, so soloing a track in one Grid does not
-  silence the other layers. The clip launcher highlights every Grid that is
-  currently sounding, and the grid playhead follows the first active layer
-  containing the Grid being edited.
-- With **loop** off in Song mode, playback stops after the last arrangement
-  bar (bar 16 by default). With loop on, the whole arrangement repeats.
+  bar boundary. **Song** follows the whole selected timeline, including empty
+  bars. The timeline playhead advances on every 16th-note step and moves
+  continuously across the sounding bar.
+- In Song mode, all eight layers resolve independently and mix: one layer can
+  play a Grid while another layer plays a different Grid. Mute and solo stay
+  scoped inside each Grid, so soloing a track in one Grid does not silence the
+  other layers. The clip launcher highlights every Grid that is currently
+  sounding, and the grid playhead follows the first active layer containing the
+  Grid being edited.
+- With **loop** off in Song mode, playback stops after the last timeline bar
+  (bar 16 by default). With loop on, the whole timeline repeats. Changing the
+  length while playing restarts the song loop from bar 1.
 - The playhead auto-scrolls the timeline to follow the active bar. Drag-painting
   near the left or right edge also scrolls the timeline.
-- **Project version 5.** Saved Layers and the active view round-trip exactly.
-  Version 4 bound lanes to channel ids (a per-track filter); those clips cannot
-  be translated into whole-Grid layers, so a v4 project loads with the Arranger
-  cleared once, its Looper timeline untouched, and opens on Looper. Older
-  projects start with eight empty layers. Stale lane clips whose Grid was
+- **Project version 6.** Bar positions, the timeline length, layer ids and
+  Grids round-trip exactly. Loading a v5 project moves its Looper timeline into
+  Layer 1 and collapses 2/4-slots-per-bar positions onto their bars. Version 4
+  bound lanes to channel ids (a per-track filter); those lanes cannot be
+  translated into whole-Grid layers, so they are dropped. Projects with no
+  timeline fields get the active Grid on Layer 1 and open on the Arranger;
+  explicitly cleared timelines stay cleared. Stale lane clips whose Grid was
   deleted are dropped on load.
+
 
 
 ## MIDI notes
@@ -255,11 +258,11 @@ Details:
 - `magicbeatz-grid-view-v1` remembers the grid pane's view ({ mode: 'grid' | 'staff' }).
 - One-shot read-only import from legacy `guitarsuite-magicbeatz`, never
   writes back.
-- **export** downloads the open project — every Grid, the Looper timeline, all
-  eight Arranger layers, tempo/div/view — as
+- **export** downloads the open project — every Grid, all eight Arranger
+  layers, the timeline length, and tempo/song settings — as
   `magicbeatz-<grid>-YYYYMMDD-HHmm.json`. **import** validates the file before
   touching state, then replaces the project and repaints grid + timeline.
   Files carry the same `{ schemaVersion, project }` document as
-  `magicbeatz-v1`, so an export envelope, a raw storage payload, a bare v5
+  `magicbeatz-v1`, so an export envelope, a raw storage payload, a bare v6
   project or a legacy v1 pattern all load; an invalid file leaves the current
   project untouched and the error shows in the grid header.
