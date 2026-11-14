@@ -30,6 +30,7 @@ modules, so any static server works too.
 - `src/data/instruments.js` → sampled catalog: 130 pitched sounds + 5 drum kits
 - `src/theory/` → music + chords (theory triads for named/degree chords)
 - `src/pads/model.js` → 8 pads × banks A/B, kit per bank, (channel, note) routing
+- `src/pads/keymap.js` → numpad 1–8 → pads P1–P8 (physical `code`, NumLock-agnostic)
 - `src/midi/` → connection / firmware SysEx inquiry / note helpers
 - `src/keys/perform.js` → note repeat + arpeggiator (rates, arp sequences, perform clock)
 - `src/sequencer/metronome.js` → beat/lamp mapping + count-in math (pure)
@@ -42,6 +43,7 @@ modules, so any static server works too.
 - `tests/sampler-step.test.mjs` → gated sample step events (duration/release/unique stopId)
 - `tests/metronome.test.mjs` → beat/lamp mapping, count-in plan and pref normalization
 - `tests/staff-view.test.mjs` → staff grouping/merging, pitch placement and ledger lines
+- `tests/numpad-pads.test.mjs` → numpad → pad shortcut mapping (physical codes, non-pad keys ignored)
 - `assets/` → notes/chords/scales/chords-theory JSON
 
 ## Sounds
@@ -61,6 +63,17 @@ modules, so any static server works too.
   saved projects (`piano` → `grand`, `bass-sub` → `synth-bass-1`,
   `hi-tom` → `tom-high`).
 
+
+## Pads
+
+- Eight pads per bank (P1–P4 bottom row, P5–P8 top row). Click/tap a pad or
+  press **numpad 1–8** — the shortcut reads the physical key, so it works with
+  NumLock on or off. It targets the visible bank and takes the exact click
+  path: velocity curve/gain, recording capture, note repeat / arp holds, and
+  **launch pads** mode (queues clips P1–P8) all behave identically. Releasing
+  the key releases the pad's perform hold.
+- Text fields keep the numpad for typing, and the focused knob dial keeps
+  Home/End/arrows; top-row `1`–`8` still queue clips.
 
 ## Keys — note repeat & arpeggiator
 

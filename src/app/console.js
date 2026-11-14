@@ -48,6 +48,7 @@ import {
   loadPadMap, savePadMap, applyCurve, PAD_ORDER, getLearnSlot, setLearnSlot,
   findPadByNote, padCollisions, DEFAULT_PAD_CHANNEL, DEFAULT_KEYS_CHANNEL,
 } from '../pads/model.js';
+import { padFromNumpadCode } from '../pads/keymap.js';
 import { connectMbzMidi } from '../midi/connection.js';
 import { queryFirmwareVersion } from '../midi/firmware.js';
 import {
@@ -280,6 +281,7 @@ const patternRenBtn = $('[data-pattern-ren]');
 const patternDelBtn = $('[data-pattern-del]');
 const heldKeys = new Map();
 const heldPc = new Set();
+const heldNumpadPads = new Map(); // padNum -> bank the key was pressed on
 
 // ---------- note repeat + arpeggiator ----------
 const performHolds = new Map(); // holdId -> { pitch, octave, velocity, order }
@@ -1034,6 +1036,20 @@ function chooseBankKit(bankId) {
 kitABtn?.addEventListener('click', () => chooseBankKit('A'));
 kitBBtn?.addEventListener('click', () => chooseBankKit('B'));
 
+/**
+ * One pad press, shared by pointer input, hardware MIDI and the computer numpad
+ * (Numpad 1–8). Launch mode queues clips; otherwise the active bank auditions.
+ */
+function triggerPad(padNum) {
+  if (launchPads) {
+    const pat = project.patterns[padNum - 1];
+    if (pat) queuePattern(pat.id);
+    flashPad(padNum);
+    return;
+  }
+  auditionPad(bank, padNum, 0.9);
+}
+
 function renderPads() {
   bankLabel.textContent = bank;
   padsEl.innerHTML = '';
@@ -1049,13 +1065,7 @@ function renderPads() {
     btn.addEventListener('pointerdown', (e) => {
       e.preventDefault();
       try { btn.setPointerCapture(e.pointerId); } catch { /* ignore */ }
-      if (launchPads) {
-        const pat = project.patterns[padNum - 1];
-        if (pat) queuePattern(pat.id);
-        flashPad(padNum);
-        return;
-      }
-      auditionPad(bank, padNum, 0.9);
+      triggerPad(padNum);
     });
     // A pad feeding repeat/arp holds until release, exactly like a key.
     const releasePad = () => releasePadPerform(bank, padNum);
@@ -4139,6 +4149,7 @@ arpLatchInput?.addEventListener('change', () => {
 
 // Never leave performance notes running when the tab loses focus.
 window.addEventListener('blur', () => {
+  heldNumpadPads.clear();
   if (!performHolds.size && !latchedArpNotes.length) return;
   for (const holdId of [...performHolds.keys()]) clearKeyHighlight(holdId);
   performHolds.clear();
@@ -4146,8 +4157,9 @@ window.addEventListener('blur', () => {
   stopPerform();
 });
 
-// Computer keyboard: A = C at visible base (ported from suite dock map).
-// Digits 1–8 queue clips from the pattern bank (no clash with A–\ note keys).
+// Computer keyboard: Numpad 1–8 short-circuit the pads (active bank, same path
+// as clicking one — launch mode queues clips); digits 1–8 queue clips from the
+// pattern bank (no clash with A–\ note keys); A = C at the visible base.
 function isTypingTarget(target) {
   if (!target || !(target instanceof Element)) return false;
   const tag = target.tagName;
@@ -4155,6 +4167,21 @@ function isTypingTarget(target) {
   return !!target.isContentEditable;
 }
 window.addEventListener('keydown', (e) => {
+  // Pad shortcuts first: with NumLock off the numpad sends End / Arrow / Home,
+  // so preventDefault() here is what keeps the page from scrolling. `code` is
+  // physical, so the same keys work with NumLock on or off.
+  const padNum = padFromNumpadCode(e.code);
+  if (padNum != null) {
+    // Text fields (and anything that already handled the key, e.g. a focused
+    // knob dial using Home/End/arrows) win over the pad shortcut.
+    if (e.defaultPrevented || isTypingTarget(e.target)) return;
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    e.preventDefault();
+    if (e.repeat || heldNumpadPads.has(padNum)) return;
+    heldNumpadPads.set(padNum, bank);
+    triggerPad(padNum);
+    return;
+  }
   if (e.repeat || e.metaKey || e.ctrlKey || e.altKey) return;
   if (isTypingTarget(e.target)) return;
   const digit = /^Digit([1-8])$/.exec(e.code);
@@ -4173,6 +4200,14 @@ window.addEventListener('keydown', (e) => {
   auditionKey(pitch, octave, `pc:${pitch}|${octave}`, 0.85);
 });
 window.addEventListener('keyup', (e) => {
+  // Release on the bank the pad was pressed on, even if the bank changed since.
+  const padNum = padFromNumpadCode(e.code);
+  if (padNum != null && heldNumpadPads.has(padNum)) {
+    const pressBank = heldNumpadPads.get(padNum);
+    heldNumpadPads.delete(padNum);
+    releasePadPerform(pressBank, padNum);
+    return;
+  }
   if (!heldPc.has(e.code)) return;
   heldPc.delete(e.code);
   const offset = PC_NOTE_OFFSETS[e.code];
